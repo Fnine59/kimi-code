@@ -1,5 +1,5 @@
 /**
- * `userTool` domain (L4) — `IAgentUserToolService` implementation.
+ * `userTool` domain — `IAgentUserToolService` implementation.
  *
  * Holds the set of host-registered user tools in the `wire` `UserToolModel`
  * (`Map<string, UserToolRegistration>`), mutating it only through the
@@ -18,8 +18,7 @@
  */
 
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable } from '#/_base/utils/abort';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import type {
@@ -102,7 +101,12 @@ export class AgentUserToolService extends Disposable implements IAgentUserToolSe
         execute: (context) => this.executeUserTool(context, name, args),
       }),
     };
-    this.registrations.set(name, this._register(this.registry.register(tool, { source: 'user' })));
+    this.registrations.set(
+      name,
+      this._register(
+        this.registry.register(tool, { source: 'user', disclosure: input.disclosure }),
+      ),
+    );
     if (options?.activate === false) return;
     this.profile.addActiveTool(name);
   }
@@ -151,6 +155,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentUserToolService,
   AgentUserToolService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'userTool',
 );

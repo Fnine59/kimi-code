@@ -9,7 +9,7 @@ import type {
   ToolInputDisplay,
 } from '#/core/index';
 
-import type { NotificationsConfig, UpgradePreferences } from './config';
+import type { NotificationsConfig, StatusLineConfig, UpgradePreferences } from './config';
 import type { PendingApproval, PendingQuestion } from './interactions/types';
 import type { ColorToken, ThemeName } from './theme';
 
@@ -54,6 +54,8 @@ export interface AppState {
   disablePasteBurst?: boolean;
   notifications: NotificationsConfig;
   upgrade: UpgradePreferences;
+  /** Footer status line customization from tui.toml; absent means the default layout. */
+  statusLine?: StatusLineConfig;
   availableModels: Record<string, ModelAlias>;
   availableProviders: Record<string, ProviderConfig>;
   sessionTitle: string | null;

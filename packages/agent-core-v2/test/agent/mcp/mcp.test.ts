@@ -11,13 +11,13 @@ import { Event } from '#/_base/event';
 import { abortError } from '#/_base/utils/abort';
 import { type DomainEvent, IEventBus } from '#/app/event/eventBus';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import type { McpConnectionManager, McpServerEntry } from '#/agent/mcp/connection-manager';
+import type { McpConnectionManager, McpServerEntry } from '#/mcpCore/connection-manager';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { AgentMcpService } from '#/agent/mcp/mcpService';
-import { ISessionMcpService } from '#/session/mcp/sessionMcp';
+import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import type { McpOAuthService } from '#/agent/mcp/oauth/service';
-import type { MCPClient, MCPToolDefinition } from '#/agent/mcp/types';
+import type { McpOAuthService } from '#/mcpCore/oauth/service';
+import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
 import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 import { McpDiscoveryModel } from '#/agent/mcp/mcpDiscoveryOps';
@@ -28,6 +28,8 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { AgentStateService } from '#/agent/state/agentStateService';
 
 import { createTestAgent, mcpServices, type TestAgentContext } from '../../harness';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
@@ -35,7 +37,7 @@ import { stubLoopWithHooks } from '../loop/stubs';
 import { stubToolResultTruncationService } from '../toolResultTruncation/stubs';
 import { recordingWireLog, registerTestAgentWire } from '../../wire/stubs';
 
-import { discoverTools, executeTool, fakeMcpClient } from './stubs';
+import { discoverTools, executeTool, fakeMcpClient } from '../../mcpCore/stubs';
 
 const MCP_OUTPUT_TRUNCATED_TEXT =
   '\n\n[Output truncated: exceeded 100000 character limit. ' +
@@ -205,6 +207,7 @@ describe('AgentMcpService', () => {
     ix.set(IAgentToolExecutorService, new SyncDescriptor(AgentToolExecutorService));
     ix.stub(IAgentToolResultTruncationService, stubToolResultTruncationService());
     ix.stub(IAgentLoopService, stubLoopWithHooks());
+    ix.set(IAgentStateService, new AgentStateService());
     wire = registerTestAgentWire(ix, 'mcp-test', {
       eventBus: ix.get(IEventBus),
       log: recordingWireLog([], (record) => {
@@ -217,10 +220,11 @@ describe('AgentMcpService', () => {
   });
 
   function createService(manager: FakeMcpManager): AgentMcpService {
-    ix.stub(ISessionMcpService, {
-      ensureMcpReady: () => Promise.resolve(),
-      connectionManager: () => manager as unknown as McpConnectionManager,
-    });
+    ix.stub(ISessionMcpHandle, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      connectionManager: manager as unknown as McpConnectionManager,
+    } satisfies ISessionMcpHandle);
     ix.stub(ISessionContext, { sessionDir: '/tmp/kimi-code-mcp-test' });
     const svc = ix.createInstance(AgentMcpService);
     disposables.add(svc);
@@ -246,9 +250,10 @@ describe('AgentMcpService', () => {
   });
 
   it('resolves through the IAgentMcpService binding with no manager', () => {
-    ix.set(IAgentMcpService, new SyncDescriptor(AgentMcpService));
-    createService(new FakeMcpManager());
+    const created = createService(new FakeMcpManager());
+    ix.set(IAgentMcpService, created);
     const svc = ix.get(IAgentMcpService);
+    expect(svc).toBe(created);
     expect(svc.list()).toEqual([]);
   });
 

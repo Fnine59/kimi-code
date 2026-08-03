@@ -3,17 +3,18 @@
  *
  * Read-only: renders the current Spine tree, cursor and per-node status through
  * `spine.renderTree()` so the model can re-orient; it never registers a
- * transition. Self-registers via `registerTool` gated on the `KIMI_CODE_SPINE`
- * flag and `agentId === 'main'` (main-agent-only, like the goal tools); the
- * Eager `AgentBuiltinToolsRegistrar` registers it into the main agent's tool
- * registry only, never a sub-agent's. Bound at Agent scope.
+ * transition. Self-registers via `registerAgentToolService` gated on the
+ * `KIMI_CODE_SPINE` flag and `agentId === 'main'` (main-agent-only, like the
+ * goal tools); `AgentToolActivationService` activates it into the main agent's
+ * tool registry only, never a sub-agent's. Bound at Agent scope.
  */
 
 import { z } from 'zod';
 
+import { createDecorator } from '#/_base/di/instantiation';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import type { BuiltinTool, ToolExecution } from '#/tool/toolContract';
-import { registerTool } from '#/agent/toolRegistry/toolContribution';
+import type { AgentTool, ToolExecution } from '#/tool/toolContract';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { SPINE_FLAG_ID } from '#/agent/spine/flag';
@@ -23,7 +24,13 @@ import { SPINE_TREE_DESCRIPTION } from './descriptions';
 
 const SpineTreeInputSchema = z.object({});
 
-export class SpineTreeTool implements BuiltinTool<Record<string, never>> {
+export interface ISpineTreeTool extends AgentTool<Record<string, never>> {
+  readonly _serviceBrand: undefined;
+}
+export const ISpineTreeTool = createDecorator<ISpineTreeTool>('spineTreeTool');
+
+export class SpineTreeTool implements ISpineTreeTool {
+  declare readonly _serviceBrand: undefined;
   readonly name = SPINE_TOOL_TREE;
   readonly description = SPINE_TREE_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(SpineTreeInputSchema);
@@ -39,7 +46,9 @@ export class SpineTreeTool implements BuiltinTool<Record<string, never>> {
   }
 }
 
-registerTool(SpineTreeTool, {
+registerAgentToolService(ISpineTreeTool, SpineTreeTool, {
+  name: SPINE_TOOL_TREE,
+  domain: 'spine',
   when: (accessor) =>
     accessor.get(IFlagService).enabled(SPINE_FLAG_ID) &&
     accessor.get(IAgentScopeContext).agentId === 'main',

@@ -31,6 +31,7 @@ export class ConfigState {
   private _cwd: string;
   private _modelAlias: string | undefined;
   private _profileName: string | undefined;
+  private _subagentNames: readonly string[] | undefined;
   // `undefined` until an effort has actually been resolved: a bare modelAlias
   // update must then fall through to the model's own default instead of
   // treating the never-chosen initial "off" as an explicit user choice.
@@ -99,6 +100,9 @@ export class ConfigState {
     if (changed.profileName) {
       this._profileName = changed.profileName;
     }
+    if (changed.subagentNames !== undefined) {
+      this._subagentNames = [...changed.subagentNames];
+    }
     if (unforcedThinkingEffort !== undefined && thinkingEffort !== undefined) {
       this._unforcedThinkingEffort = unforcedThinkingEffort;
       this._thinkingEffort = thinkingEffort;
@@ -137,6 +141,7 @@ export class ConfigState {
       modelAlias: this._modelAlias,
       modelCapabilities: resolved?.modelCapabilities ?? UNKNOWN_CAPABILITY,
       profileName: this.profileName,
+      subagentNames: this.subagentNames,
       thinkingEffort: this.thinkingEffort,
       systemPrompt: this.systemPrompt,
     };
@@ -162,6 +167,17 @@ export class ConfigState {
     return provider;
   }
 
+  /**
+   * Memo of the base provider built by {@link provider}, keyed by config
+   * content. The morphs applied per access (withThinking, sampling,
+   * thinking.keep) clone the base, and the clones share provider-level state
+   * — the OpenAI client and the reasoning-field dialect detected from inbound
+   * responses. Rebuilding the base per access would silently reset that
+   * dialect on every turn; a config change (model switch, credential refresh)
+   * changes the key and rebuilds cleanly.
+   */
+  private providerMemo: { key: string; provider: ChatProvider } | undefined;
+
   get provider(): ChatProvider {
     // All provider-level request config is applied here so every request built
     // from config.provider — the main loop AND full-history compaction — carries it:
@@ -172,7 +188,12 @@ export class ConfigState {
     //   - thinking.keep: env KIMI_MODEL_THINKING_KEEP > config thinking.keep > default "all"
     //     (only while thinking is on). Drives Kimi's `thinking.keep` and, on the
     //     Anthropic path, a `context_management` `clear_thinking_20251015` edit.
-    const provider = createProvider(this.providerConfig).withThinking(this.thinkingEffort);
+    const providerConfig = this.providerConfig;
+    const memoKey = JSON.stringify(providerConfig);
+    if (this.providerMemo?.key !== memoKey) {
+      this.providerMemo = { key: memoKey, provider: createProvider(providerConfig) };
+    }
+    const provider = this.providerMemo.provider.withThinking(this.thinkingEffort);
     const withSampling = applyKimiEnvSamplingParams(provider);
     const configKeep = this.agent.kimiConfig?.thinking?.keep;
     const withKimiKeep = applyKimiEnvThinkingKeep(
@@ -231,6 +252,10 @@ export class ConfigState {
 
   get profileName(): string | undefined {
     return this._profileName;
+  }
+
+  get subagentNames(): readonly string[] | undefined {
+    return this._subagentNames;
   }
 
   get systemPrompt(): string {

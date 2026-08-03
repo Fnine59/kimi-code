@@ -1,5 +1,5 @@
 /**
- * `_base/log` (L0) — `BoundLogger` base and the App-scope `ILogService`.
+ * `_base/log` — `BoundLogger` base and the App-scope `ILogService`.
  *
  * `BoundLogger` filters entries by level, extracts the payload into ctx/error,
  * merges bound context, and writes to a plain `ILogWriter`. It extends
@@ -9,9 +9,8 @@
  * level from `ILogOptions`.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { Disposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
 import {
   type ILogger,
@@ -170,6 +169,6 @@ registerScopedService(
   LifecycleScope.App,
   ILogService,
   AppLogService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'log',
 );

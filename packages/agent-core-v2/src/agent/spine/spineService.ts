@@ -49,9 +49,10 @@
  * history. Bound at Agent scope.
  */
 
+import { join } from 'pathe';
+
 import { Disposable } from '#/_base/di/lifecycle';
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { COMPACTION_SUMMARY_PREFIX } from '#/agent/contextMemory/compactionHandoff';
@@ -69,7 +70,6 @@ import { IFlagService } from '#/app/flag/flag';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { IWireService } from '#/wire/wire';
 
@@ -193,7 +193,6 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
     @IHostEnvironment private readonly hostEnv: IHostEnvironment,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IFlagService private readonly flags: IFlagService,
-    @ISessionContext private readonly sessionCtx: ISessionContext,
     @IAgentScopeContext private readonly agentScope: IAgentScopeContext,
     @IWireService private readonly wire: IWireService,
     @IEventBus private readonly eventBus: IEventBus,
@@ -647,17 +646,11 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
     }
   }
 
-  // `<sessionDir>/agents/<id>` is assembled by bootstrap alone (business code
-  // never builds it); spine only appends its `spine/` suffix underneath.
+  // The per-agent homedir (`<sessionDir>/agents/<id>`) is derived the same way
+  // agentLifecycle issues it — bootstrap's homeDir plus the seeded agent scope;
+  // spine only appends its `spine/` suffix underneath.
   private archivePath(nodeId: string): string {
-    return spineArchivePath(
-      this.bootstrap.agentHomedir(
-        this.sessionCtx.workspaceId,
-        this.sessionCtx.sessionId,
-        this.agentScope.agentId,
-      ),
-      nodeId,
-    );
+    return spineArchivePath(join(this.bootstrap.homeDir, this.agentScope.scope()), nodeId);
   }
 }
 
@@ -712,6 +705,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentSpineService,
   AgentSpineService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'spine',
 );

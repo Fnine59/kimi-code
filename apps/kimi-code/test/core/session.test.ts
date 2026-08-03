@@ -35,7 +35,7 @@ import {
   ISessionQuestionService,
   ISessionSkillCatalog,
   ISessionSwarmService,
-  ISessionWorkspaceCommandService,
+  IWorkspaceDirs,
 } from '@moonshot-ai/agent-core-v2';
 import { CoreErrorCodes, isCoreError } from '../../src/core/errors';
 import { CoreSession } from '../../src/core/session';
@@ -253,7 +253,7 @@ function makeFixture(options?: {
       [ISessionBtwService, { start: () => Promise.resolve('btw-1') }],
       [ISessionSwarmService, sessionSwarm],
       [ISessionSkillCatalog, { ready: Promise.resolve(), catalog: { listSkills: () => skillDefinitions } }],
-      [ISessionWorkspaceCommandService, { addAdditionalDir: recordReturning('addAdditionalDir', Promise.resolve(addDirResult)) }],
+      [IWorkspaceDirs, { addDir: recordReturning('addAdditionalDir', Promise.resolve(addDirResult)) }],
       [ISessionContext, { cwd: '/work' }],
       [ISessionMetadata, { read: () => Promise.resolve(sessionMeta) }],
     ]),
@@ -537,7 +537,7 @@ describe('CoreSession orchestration', () => {
     expect(await fx.core.startBtw()).toBe('btw-1');
   });
 
-  it('addAdditionalDir forwards to the workspace command service', async () => {
+  it('addAdditionalDir forwards to the workspace dirs service', async () => {
     const fx = makeFixture();
     expect(await fx.core.addAdditionalDir({ path: '/extra', persist: true })).toEqual(fx.addDirResult);
     expect(fx.calls['addAdditionalDir']).toEqual([[{ path: '/extra', persist: true }]]);

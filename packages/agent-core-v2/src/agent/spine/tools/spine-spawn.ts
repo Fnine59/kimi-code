@@ -5,7 +5,7 @@
  * structured receipt landing in history IS the join, from which the projection
  * synthesizes N closed child nodes. The service owns capacity admission and
  * per-step mutual exclusion with the other spine control tools. Self-registers
- * via `registerTool` gated on BOTH the `KIMI_CODE_SPINE` and
+ * via `registerAgentToolService` gated on BOTH the `KIMI_CODE_SPINE` and
  * `KIMI_CODE_SPINE_SPAWN` flags and `agentId === 'main'` (main-agent-only,
  * like the other spine tools), and only when the configured capacity admits at
  * least two concurrent child agents. Bound at Agent scope.
@@ -13,9 +13,10 @@
 
 import { z } from 'zod';
 
+import { createDecorator } from '#/_base/di/instantiation';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import type { BuiltinTool, ToolExecution } from '#/tool/toolContract';
-import { registerTool } from '#/agent/toolRegistry/toolContribution';
+import type { AgentTool, ToolExecution } from '#/tool/toolContract';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { SPINE_FLAG_ID, SPINE_SPAWN_FLAG_ID } from '#/agent/spine/flag';
@@ -48,7 +49,13 @@ const SpineSpawnInputSchema = z.object({
 
 export type SpineSpawnInput = z.infer<typeof SpineSpawnInputSchema>;
 
-export class SpineSpawnTool implements BuiltinTool<SpineSpawnInput> {
+export interface ISpineSpawnTool extends AgentTool<SpineSpawnInput> {
+  readonly _serviceBrand: undefined;
+}
+export const ISpineSpawnTool = createDecorator<ISpineSpawnTool>('spineSpawnTool');
+
+export class SpineSpawnTool implements ISpineSpawnTool {
+  declare readonly _serviceBrand: undefined;
   readonly name = SPINE_TOOL_SPAWN;
   readonly description = SPINE_SPAWN_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(SpineSpawnInputSchema);
@@ -69,7 +76,9 @@ function spawnCapacityAtLeastTwo(): boolean {
   return maxSpawnBranchCount(maxThreads) >= 2;
 }
 
-registerTool(SpineSpawnTool, {
+registerAgentToolService(ISpineSpawnTool, SpineSpawnTool, {
+  name: SPINE_TOOL_SPAWN,
+  domain: 'spine',
   when: (accessor) =>
     accessor.get(IFlagService).enabled(SPINE_FLAG_ID) &&
     accessor.get(IFlagService).enabled(SPINE_SPAWN_FLAG_ID) &&

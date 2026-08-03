@@ -1,5 +1,5 @@
 /**
- * `skillCatalog` domain (L3) — builtin `ISkillSource` producer.
+ * `skillCatalog` domain — builtin `ISkillSource` producer.
  *
  * Yields the code-defined `BUILTIN_SKILLS` as the lowest-priority contribution
  * (`builtin`, priority 0) so extra / user / workspace / plugin skills override it on
@@ -7,8 +7,7 @@
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
 import { BUILTIN_SKILLS } from './builtin/builtin';
 import { SKILL_SOURCE_PRIORITY, type ISkillSource, type SkillContribution } from './skillSource';
@@ -35,6 +34,6 @@ registerScopedService(
   LifecycleScope.App,
   IBuiltinSkillSource,
   BuiltinSkillSource,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'skillCatalog',
 );

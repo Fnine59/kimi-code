@@ -11,9 +11,8 @@
  * scoped-registry default in `buildCollection`.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 
 export interface ICliSkillDirs {
   readonly _serviceBrand: undefined;
@@ -33,6 +32,6 @@ registerScopedService(
   LifecycleScope.App,
   ICliSkillDirs,
   DefaultCliSkillDirs,
-  InstantiationType.Delayed,
+  ScopeActivation.OnDemand,
   'skillCatalog',
 );

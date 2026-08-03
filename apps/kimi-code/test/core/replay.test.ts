@@ -18,6 +18,7 @@ import {
   IAgentToolRegistryService,
   IAgentUsageService,
   IAppendLogStore,
+  ISessionContext,
   ISessionMetadata,
   ISessionTodoService,
   IWireService,
@@ -80,7 +81,6 @@ function makeFixture(metaOverrides?: Record<string, unknown>) {
     },
   ];
   const profileData = {
-    cwd: '/work/dir',
     modelAlias: 'kimi-latest',
     modelCapabilities: { imageInput: true },
     profileName: 'agent',
@@ -169,6 +169,7 @@ function makeFixture(metaOverrides?: Record<string, unknown>) {
   const session = {
     id: 'sess-1',
     accessor: makeAccessor([
+      [ISessionContext, { cwd: '/work/dir' }],
       [ISessionTodoService, { getTodos: () => todos }],
       [ISessionMetadata, { read: async () => meta }],
     ]),

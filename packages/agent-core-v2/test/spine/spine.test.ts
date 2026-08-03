@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MASTER_ENV } from '#/app/flag/flagService';
-import { IAgentProfileCatalogService } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import {
   resetUnexpectedErrorHandler,
   setUnexpectedErrorHandler,
@@ -16,7 +16,7 @@ import { SpineTreeTool } from '#/agent/spine/tools/spine-tree';
 import { SpineTrimTool } from '#/agent/spine/tools/spine-trim';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IFlagService } from '#/app/flag/flag';
-import { getToolContributions } from '#/agent/toolRegistry/toolContribution';
+import { getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
 import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -300,7 +300,7 @@ describe('Spine control tools', () => {
     // out even though they are registered — the model would see `<spine_view>`
     // with no tools to act on. Guards the whitelist entry in `profiles.ts`.
     const ctx = testAgent();
-    const profile = ctx.get(IAgentProfileCatalogService).getDefault();
+    const profile = ctx.get(ISessionAgentProfileCatalog).getDefault();
     expect(profile.tools).toEqual(
       expect.arrayContaining(['spine_open', 'spine_close', 'spine_next', 'spine_tree', 'spine_trim', 'spine_spawn']),
     );
@@ -825,7 +825,7 @@ describe('spine control tool main-agent gating', () => {
   }
 
   it.each(gatedTools)('%s registers only on the main agent with the required flags', (name, ctor) => {
-    const contribution = getToolContributions().find((c) => c.ctor === ctor);
+    const contribution = getAgentToolContributions().find((c) => c.ctor === ctor);
     expect(contribution, `${name} contribution`).toBeDefined();
     const when = contribution?.options.when;
     expect(when, `${name} must gate on flags + main-agent identity`).toBeDefined();
@@ -838,7 +838,7 @@ describe('spine control tool main-agent gating', () => {
 
   it('spine_spawn requires capacity for at least two branches', () => {
     vi.stubEnv('KIMI_CODE_SPINE_SPAWN_MAX_THREADS', '2');
-    const contribution = getToolContributions().find((c) => c.ctor === SpineSpawnTool);
+    const contribution = getAgentToolContributions().find((c) => c.ctor === SpineSpawnTool);
     const when = contribution?.options.when;
     expect(when?.(accessorFor('main', { spine: true, trim: false, spawn: true }))).toBe(false);
     vi.unstubAllEnvs();

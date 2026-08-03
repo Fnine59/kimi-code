@@ -1,8 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { InstantiationType } from '#/_base/di/extensions';
-import type { ServiceIdentifier } from '#/_base/di/instantiation';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, _clearScopedRegistryForTests, registerScopedService } from '#/_base/di/scope';
 import { createScopedTestHost } from '#/_base/di/test';
 import {
   IBootstrapService,
@@ -11,36 +9,48 @@ import {
   resolveBootstrapOptions,
 } from '#/app/bootstrap/bootstrap';
 import { BootstrapService } from '#/app/bootstrap/bootstrapService';
-import { IKosongConfigService } from '#/app/kosongConfig/kosongConfig';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
+import { stubClientIdentity } from './stubs';
+
 describe('BootstrapService (scoped)', () => {
   beforeEach(() => {
-    // No `_clearScopedRegistryForTests()` here: the registry is process-wide,
-    // and wiping it would break other suites sharing this worker.
-    // Re-registering is enough — later registrations win in the scope
-    // collection.
+    // Keep the registry minimal so unrelated OnScopeCreated services do not run.
+    _clearScopedRegistryForTests();
     registerScopedService(
       LifecycleScope.App,
       IBootstrapService,
       BootstrapService,
-      InstantiationType.Eager,
+      ScopeActivation.OnScopeCreated,
       'bootstrap',
     );
   });
 
   it('resolves homeDir/configPath from the seeded context token', () => {
-    const host = createScopedTestHost(bootstrapSeed({ homeDir: '/tmp/kimi-home' }));
+    const host = createScopedTestHost(
+      bootstrapSeed({ homeDir: '/tmp/kimi-home', clientIdentity: stubClientIdentity }),
+    );
     const svc = host.app.accessor.get(IBootstrapService);
     expect(svc.homeDir).toBe('/tmp/kimi-home');
     expect(svc.configPath).toBe('/tmp/kimi-home/config.toml');
-    expect(svc.sessionsDir).toBe('/tmp/kimi-home/sessions');
+    expect(svc.scope('sessions')).toBe('sessions');
+    host.dispose();
+  });
+
+  it('exposes the seeded client identity', () => {
+    const host = createScopedTestHost(
+      bootstrapSeed({ homeDir: '/tmp/kimi-home', clientIdentity: stubClientIdentity }),
+    );
+    const svc = host.app.accessor.get(IBootstrapService);
+    expect(svc.clientIdentity).toEqual(stubClientIdentity);
     host.dispose();
   });
 
   it('getEnv reads from the seeded env bag', () => {
-    const host = createScopedTestHost(bootstrapSeed({ env: { FOO: 'bar' } }));
+    const host = createScopedTestHost(
+      bootstrapSeed({ env: { FOO: 'bar' }, clientIdentity: stubClientIdentity }),
+    );
     const svc = host.app.accessor.get(IBootstrapService);
     expect(svc.getEnv('FOO')).toBe('bar');
     expect(svc.getEnv('MISSING')).toBeUndefined();
@@ -50,23 +60,32 @@ describe('BootstrapService (scoped)', () => {
 
 describe('resolveBootstrapOptions', () => {
   it('prefers explicit homeDir over KIMI_CODE_HOME over osHomeDir', () => {
-    expect(resolveBootstrapOptions({ homeDir: '/a', osHomeDir: '/b', env: {} }).homeDir).toBe('/a');
-    expect(resolveBootstrapOptions({ osHomeDir: '/b', env: { KIMI_CODE_HOME: '/c' } }).homeDir).toBe('/c');
-    expect(resolveBootstrapOptions({ osHomeDir: '/b', env: {} }).homeDir).toBe('/b/.kimi-code');
+    expect(
+      resolveBootstrapOptions({ homeDir: '/a', osHomeDir: '/b', env: {}, clientIdentity: stubClientIdentity })
+        .homeDir,
+    ).toBe('/a');
+    expect(
+      resolveBootstrapOptions({
+        osHomeDir: '/b',
+        env: { KIMI_CODE_HOME: '/c' },
+        clientIdentity: stubClientIdentity,
+      }).homeDir,
+    ).toBe('/c');
+    expect(
+      resolveBootstrapOptions({ osHomeDir: '/b', env: {}, clientIdentity: stubClientIdentity }).homeDir,
+    ).toBe('/b/.kimi-code');
+  });
+
+  it('passes through an explicit clientIdentity', () => {
+    expect(
+      resolveBootstrapOptions({ env: {}, clientIdentity: stubClientIdentity }).clientIdentity,
+    ).toEqual(stubClientIdentity);
   });
 });
 
 describe('bootstrap() storage seeding', () => {
   it('seeds IFileSystemStorageService as a FileStorageService instance', () => {
-    // `bootstrap()` eagerly instantiates the kosong persistence bridge; stub
-    // it out so this test stays focused on the storage seed instead of
-    // pulling the whole config/kosong graph into the module imports.
-    const { app } = bootstrap({ homeDir: '/tmp/kimi-home' }, [
-      [
-        IKosongConfigService as ServiceIdentifier<unknown>,
-        { _serviceBrand: undefined, ready: Promise.resolve() },
-      ],
-    ]);
+    const { app } = bootstrap({ homeDir: '/tmp/kimi-home', clientIdentity: stubClientIdentity });
     try {
       const storage = app.accessor.get(IFileSystemStorageService);
       expect(storage).toBeInstanceOf(FileStorageService);

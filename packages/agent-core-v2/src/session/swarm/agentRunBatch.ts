@@ -1,11 +1,10 @@
 /**
- * `sessionSwarm` domain (L4) — internal concurrency / rate-limit scheduler.
+ * `sessionSwarm` domain — internal concurrency / rate-limit scheduler.
  *
  * Owns the burst-then-throttle launch ramp and the provider-rate-limit recovery
- * loop used by `SessionSwarmService`; drives each attempt through a
+ * loop for swarm agent runs; drives each attempt through a
  * `AgentRunBatchLauncher` and surfaces requeues via `suspended`. Pure scheduling
- * logic — owns no scoped state. Not part of the public surface: only
- * `SessionSwarmService` imports it.
+ * logic — owns no scoped state.
  */
 
 import { isProviderRateLimitError } from '#/kosong/contract/errors';
@@ -31,6 +30,7 @@ export interface AgentRunAttemptOptions {
 export interface AgentSpawnAttemptOptions extends AgentRunAttemptOptions {
   readonly profileName: string;
   readonly swarmItem?: string;
+  readonly binding?: { readonly model: string; readonly thinking?: string };
 }
 
 export type AgentRunAttemptHandle = {
@@ -301,6 +301,7 @@ export class AgentRunBatch<T> {
         const spawnOptions: AgentSpawnAttemptOptions = {
           profileName: task.profileName,
           swarmItem: task.swarmItem,
+          binding: task.binding,
           ...runOptions,
         };
         handle = await this.launcher.spawn(spawnOptions);
@@ -648,5 +649,4 @@ export function resolveSwarmMaxConcurrency(
   }
   return value;
 }
-
 

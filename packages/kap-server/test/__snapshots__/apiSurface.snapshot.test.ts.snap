@@ -30,11 +30,23 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/v1/providers/{provider_id}",
+    ],
+    [
+      "DELETE",
       "/api/v1/workspaces/{workspace_id}",
     ],
     [
       "GET",
       "/api/v1/auth",
+    ],
+    [
+      "GET",
+      "/api/v1/catalog/providers",
+    ],
+    [
+      "GET",
+      "/api/v1/catalog/providers/{catalog_id}",
     ],
     [
       "GET",
@@ -59,6 +71,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/v1/debug/session/{session_id}/agent/{agent_id}/{service}/{method}",
+    ],
+    [
+      "GET",
+      "/api/v1/debug/workspace/{workspace_id}/{service}/{method}",
     ],
     [
       "GET",
@@ -107,6 +123,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/v1/oauth/usage",
+    ],
+    [
+      "GET",
+      "/api/v1/oauth/userinfo",
     ],
     [
       "GET",
@@ -222,6 +242,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/workspaces/{workspace_id}/trust",
+    ],
+    [
+      "GET",
       "/asyncapi.json",
     ],
     [
@@ -250,7 +274,15 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/debug/workspace/{workspace_id}/{service}/{method}",
+    ],
+    [
+      "POST",
       "/api/v1/files",
+    ],
+    [
+      "POST",
+      "/api/v1/fs:mkdir",
     ],
     [
       "POST",
@@ -282,11 +314,19 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/providers",
+    ],
+    [
+      "POST",
       "/api/v1/providers{action}",
     ],
     [
       "POST",
       "/api/v1/providers/{tail}",
+    ],
+    [
+      "POST",
+      "/api/v1/search",
     ],
     [
       "POST",
@@ -354,7 +394,23 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/workspace/fs:search",
+    ],
+    [
+      "POST",
       "/api/v1/workspaces",
+    ],
+    [
+      "POST",
+      "/api/v1/workspaces/{workspace_id}/trust",
+    ],
+    [
+      "POST",
+      "/api/v1/workspaces/{workspace_id}/untrust",
+    ],
+    [
+      "PUT",
+      "/api/v1/providers/{provider_id}",
     ],
   ],
 }

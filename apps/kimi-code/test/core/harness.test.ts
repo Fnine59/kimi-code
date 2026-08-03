@@ -235,7 +235,7 @@ function makeFixture(options?: {
         ],
         [
           ISessionWorkspaceContext,
-          { workDir, additionalDirs: ['/extra'], addAdditionalDir: record(`${sid}.addAdditionalDir`) },
+          { workDir, additionalDirs: ['/extra'] },
         ],
         [ISessionTodoService, { getTodos: () => [] }],
       ]),
@@ -252,8 +252,8 @@ function makeFixture(options?: {
       persisted.add(opts.sessionId);
       return Promise.resolve(makeSessionHandle(opts.sessionId, opts.workDir));
     },
-    resume: (id: string) => {
-      (calls['lifecycle.resume'] ??= []).push([id]);
+    resume: (id: string, opts?: { additionalDirs?: readonly string[] }) => {
+      (calls['lifecycle.resume'] ??= []).push([id, opts]);
       order.push('lifecycle.resume');
       if (!persisted.has(id)) return Promise.resolve(undefined);
       return Promise.resolve(makeSessionHandle(id, '/work'));
@@ -332,7 +332,7 @@ function makeFixture(options?: {
       }],
       [ISessionLifecycleService, lifecycle],
       [ISessionIndex, { list: recordReturning('index.list', Promise.resolve({ items: indexItems })) }],
-      [IBootstrapService, { sessionDir: (ws: string, id: string) => `/sessions/${ws}/${id}` }],
+      [IBootstrapService, { sessionsDir: '/sessions' }],
       [
         IConfigService,
         {
@@ -385,7 +385,7 @@ function makeFixture(options?: {
     app: app as never,
     homeDir: '/home/.kimi-code',
     configPath: options?.configPath ?? '/home/.kimi-code/config.toml',
-    identity: { userAgentProduct: 'KimiCodeTest', version: '1.2.3' },
+    identity: { productName: 'KimiCodeTest', version: '1.2.3', platform: 'kimi_code_cli' },
     uiMode: 'test-ui',
     telemetry: telemetry as never,
     auth: { marker: 'auth' } as never,
@@ -434,14 +434,15 @@ describe('CoreHarness createSession', () => {
 
     expect(session.id).toBe('sess-1');
     expect(fx.calls['registry.createOrTouch']).toEqual([['/work']]);
-    expect(fx.calls['lifecycle.create']).toEqual([[{ sessionId: 'sess-1', workDir: '/work' }]]);
+    expect(fx.calls['lifecycle.create']).toEqual([
+      [{ sessionId: 'sess-1', workDir: '/work', additionalDirs: ['/extra'] }],
+    ]);
     expect(fx.order.indexOf('registry.createOrTouch')).toBeLessThan(fx.order.indexOf('lifecycle.create'));
     expect(fx.order.indexOf('lifecycle.create')).toBeLessThan(fx.order.indexOf('sess-1.setModel'));
     expect(fx.calls['sess-1.setModel']).toEqual([['kimi-latest']]);
     expect(fx.calls['sess-1.setThinking']).toEqual([['high']]);
     expect(fx.calls['sess-1.setMode']).toEqual([['auto']]);
     expect(fx.calls['sess-1.meta.update']).toEqual([[{ custom: { source: 'test' } }]]);
-    expect(fx.calls['sess-1.addAdditionalDir']).toEqual([['/extra']]);
     // Live summary snapshot is projected from session metadata + context.
     expect(session.summary).toEqual({
       id: 'sess-1',
@@ -539,8 +540,7 @@ describe('CoreHarness resumeSession', () => {
     fx.telemetryEvents.length = 0;
 
     const session = await fx.harness.resumeSession({ id: 'sess-1', additionalDirs: ['/more'] });
-    expect(fx.calls['lifecycle.resume']).toEqual([['sess-1']]);
-    expect(fx.calls['sess-1.addAdditionalDir']).toEqual([['/more']]);
+    expect(fx.calls['lifecycle.resume']).toEqual([['sess-1', { additionalDirs: ['/more'] }]]);
     const resumeState = session.getResumeState();
     expect(resumeState).toBeDefined();
     expect(Object.keys(resumeState!.agents)).toEqual(['main']);
@@ -661,7 +661,7 @@ describe('CoreHarness renameSession', () => {
     fx.calls['lifecycle.close'] = [];
 
     await fx.harness.renameSession({ id: 'sess-1', title: 'Cold Title' });
-    expect(fx.calls['lifecycle.resume']).toEqual([['sess-1']]);
+    expect(fx.calls['lifecycle.resume']).toEqual([['sess-1', undefined]]);
     expect(fx.calls['sess-1.setTitle']).toEqual([['Cold Title']]);
     expect(fx.calls['lifecycle.close']).toEqual([['sess-1']]);
   });

@@ -1,5 +1,5 @@
 /**
- * `llmRequester` domain (L3) — `IAgentLLMRequesterService` implementation.
+ * `llmRequester` domain — `IAgentLLMRequesterService` implementation.
  *
  * Assembles per-turn `ModelRequestInput` from `profile` (system prompt) plus
  * the registered system-prompt contributions (prompt-shaping features plug in
@@ -29,24 +29,25 @@
  * per-request fields) through `log`, publishes advisory model-capability
  * warnings through `eventBus`, records durable request-trace Ops
  * through `wire`, reports each request's `x-trace-id` to its caller, and
- * reports provider failures through `telemetry`. Bound at Agent scope.
+ * reports provider failures through `telemetry`. The mutable request state
+ * (`lastConfigLogSignature`, `turnConfigs`, `mediaDegradedTurns`,
+ * `mediaStrippedTurns`, `emittedThinkingEffortWarnings`) is registered into
+ * `agentState` (`IAgentStateService`) and read/written through it. Bound at
+ * Agent scope.
  */
 
 import { createHash } from 'node:crypto';
-import { InstantiationType } from '#/_base/di/extensions';
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { defineState } from '#/_base/state/stateRegistry';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import {
   IAgentContextProjectorService,
   type MediaStripSnapshot,
 } from '#/agent/contextProjector/contextProjector';
 import { IAgentContextSizeService } from '#/agent/contextSize/contextSize';
-import {
-  IFaultInjectionService,
-  type FaultKind,
-} from '#/agent/faultInjection/faultInjection';
 import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
+import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentVideoResolverService } from '#/agent/media/videoResolver';
@@ -154,16 +155,32 @@ interface TurnRequestConfig {
   readonly systemPrompt: string;
 }
 
+export const llmRequesterLastConfigLogSignatureKey = defineState<string | undefined>(
+  'llmRequester.lastConfigLogSignature',
+  () => undefined as string | undefined,
+);
+export const llmRequesterTurnConfigsKey = defineState<Map<number, TurnRequestConfig>>(
+  'llmRequester.turnConfigs',
+  () => new Map(),
+);
+export const llmRequesterMediaDegradedTurnsKey = defineState<Set<number>>(
+  'llmRequester.mediaDegradedTurns',
+  () => new Set(),
+);
+export const llmRequesterMediaStrippedTurnsKey = defineState<Map<number, MediaStripSnapshot>>(
+  'llmRequester.mediaStrippedTurns',
+  () => new Map(),
+);
+export const llmRequesterEmittedThinkingEffortWarningsKey = defineState<Set<string>>(
+  'llmRequester.emittedThinkingEffortWarnings',
+  () => new Set(),
+);
 
 export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   declare readonly _serviceBrand: undefined;
 
-  private lastConfigLogSignature: string | undefined;
   private readonly systemPromptContributions = new Map<string, SystemPromptContribution>();
-  private readonly turnConfigs = new Map<number, TurnRequestConfig>();
-  private readonly mediaDegradedTurns = new Set<number>();
-  private readonly mediaStrippedTurns = new Map<number, MediaStripSnapshot>();
-  private readonly emittedThinkingEffortWarnings = new Set<string>();
+
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -180,9 +197,39 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @ILogService private readonly log: ILogService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IWireService private readonly wire: IWireService,
-    @IFaultInjectionService private readonly faultInjection: IFaultInjectionService,
     @IEventBus private readonly eventBus: IEventBus,
-  ) {}
+    @IAgentStateService private readonly states: IAgentStateService,
+  ) {
+    this.states.register(llmRequesterLastConfigLogSignatureKey);
+    this.states.register(llmRequesterTurnConfigsKey);
+    this.states.register(llmRequesterMediaDegradedTurnsKey);
+    this.states.register(llmRequesterMediaStrippedTurnsKey);
+    this.states.register(llmRequesterEmittedThinkingEffortWarningsKey);
+  }
+
+  private get lastConfigLogSignature(): string | undefined {
+    return this.states.get(llmRequesterLastConfigLogSignatureKey);
+  }
+
+  private set lastConfigLogSignature(value: string | undefined) {
+    this.states.set(llmRequesterLastConfigLogSignatureKey, value);
+  }
+
+  private get turnConfigs(): Map<number, TurnRequestConfig> {
+    return this.states.get(llmRequesterTurnConfigsKey);
+  }
+
+  private get mediaDegradedTurns(): Set<number> {
+    return this.states.get(llmRequesterMediaDegradedTurnsKey);
+  }
+
+  private get mediaStrippedTurns(): Map<number, MediaStripSnapshot> {
+    return this.states.get(llmRequesterMediaStrippedTurnsKey);
+  }
+
+  private get emittedThinkingEffortWarnings(): Set<string> {
+    return this.states.get(llmRequesterEmittedThinkingEffortWarningsKey);
+  }
 
   registerSystemPromptContribution(
     id: string,
@@ -409,11 +456,6 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       };
       this.logRequest(logInput);
       this.recordRequest(logInput);
-
-      const fault = this.faultInjection.take();
-      if (fault !== undefined) {
-        throw faultToError(fault);
-      }
 
       let message: Message | undefined;
       let usage = emptyUsage();
@@ -862,12 +904,6 @@ function projectionField(
     : undefined;
 }
 
-function faultToError(kind: FaultKind): Error {
-  return kind === 'request-too-large'
-    ? new APIRequestTooLargeError(413, 'Request Entity Too Large (fault injection)')
-    : new APIStatusError(400, 'unsupported image format: image/avif (fault injection)');
-}
-
 function fingerprint(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -908,6 +944,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentLLMRequesterService,
   AgentLLMRequesterService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'llmRequester',
 );

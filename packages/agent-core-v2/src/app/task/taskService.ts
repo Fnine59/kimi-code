@@ -1,5 +1,5 @@
 /**
- * `task` domain (L1) — `ITaskService` implementation.
+ * `task` domain — `ITaskService` implementation.
  *
  * Manages task handles: each handle owns a state machine, an optional
  * `AbortController` (for `run()`), and `Emitter` pairs for state changes
@@ -7,9 +7,8 @@
  */
 
 import { Emitter, type Event } from '#/_base/event';
-import { InstantiationType } from '#/_base/di/extensions';
 import { Disposable, markAsDisposed, trackDisposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
 import {
   type ITaskHandle,
@@ -181,6 +180,6 @@ registerScopedService(
   LifecycleScope.App,
   ITaskService,
   TaskService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'task',
 );

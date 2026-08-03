@@ -4,18 +4,19 @@
  * Receipt-only: validates the child goal and registers the single per-step
  * pending transition through `spine`; the real tree move is committed by the
  * `spine` service after the step once the matching tool result lands in
- * `contextMemory`. Self-registers via `registerTool` gated on the
+ * `contextMemory`. Self-registers via `registerAgentToolService` gated on the
  * `KIMI_CODE_SPINE` flag and `agentId === 'main'` (main-agent-only, like the
- * goal tools); the Eager `AgentBuiltinToolsRegistrar` registers it into the
- * main agent's tool registry only (injecting the Agent-scope `spine`), never a
+ * goal tools); `AgentToolActivationService` activates it into the main
+ * agent's tool registry only (injecting the Agent-scope `spine`), never a
  * sub-agent's. Bound at Agent scope.
  */
 
 import { z } from 'zod';
 
+import { createDecorator } from '#/_base/di/instantiation';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import type { BuiltinTool, ToolExecution } from '#/tool/toolContract';
-import { registerTool } from '#/agent/toolRegistry/toolContribution';
+import type { AgentTool, ToolExecution } from '#/tool/toolContract';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { SPINE_FLAG_ID } from '#/agent/spine/flag';
@@ -32,7 +33,13 @@ const SpineOpenInputSchema: z.ZodType<SpineOpenInput> = z.object({
   summary: z.string().min(1).describe(SPINE_OPEN_SUMMARY_DESCRIPTION),
 });
 
-export class SpineOpenTool implements BuiltinTool<SpineOpenInput> {
+export interface ISpineOpenTool extends AgentTool<SpineOpenInput> {
+  readonly _serviceBrand: undefined;
+}
+export const ISpineOpenTool = createDecorator<ISpineOpenTool>('spineOpenTool');
+
+export class SpineOpenTool implements ISpineOpenTool {
+  declare readonly _serviceBrand: undefined;
   readonly name = SPINE_TOOL_OPEN;
   readonly description = SPINE_OPEN_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(SpineOpenInputSchema);
@@ -48,7 +55,9 @@ export class SpineOpenTool implements BuiltinTool<SpineOpenInput> {
   }
 }
 
-registerTool(SpineOpenTool, {
+registerAgentToolService(ISpineOpenTool, SpineOpenTool, {
+  name: SPINE_TOOL_OPEN,
+  domain: 'spine',
   when: (accessor) =>
     accessor.get(IFlagService).enabled(SPINE_FLAG_ID) &&
     accessor.get(IAgentScopeContext).agentId === 'main',

@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IFlagService } from '#/app/flag/flag';
 import { ILogService } from '#/_base/log/log';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -19,6 +22,15 @@ import { stubLog } from '../../_base/log/stubs';
 import { stubQueryStore } from '../../persistence/interface/stubs';
 
 const META_SCOPE = 'sessions/wd_test/s1/session-meta';
+
+// A re-constructed SessionMetadata stands for a new session lifetime: it gets
+// its own state registry, so the shared `sessionMetadata.data` key registers
+// cleanly instead of colliding with the first instance's registration.
+function createFreshMetadata(ix: TestInstantiationService): SessionMetadata {
+  return ix
+    .createChild(new ServiceCollection([ISessionStateService, new SessionStateService()]))
+    .createInstance(SessionMetadata);
+}
 
 function makeContext(): ISessionContext {
   return makeSessionContext({
@@ -42,6 +54,7 @@ describe('SessionMetadata', () => {
     ix.stub(ISessionContext, makeContext());
     ix.stub(IQueryStore, stubQueryStore());
     ix.stub(IFlagService, stubFlag(false));
+    ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
     ix.set(IFileSystemStorageService, new SyncDescriptor(InMemoryStorageService));
     ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
     ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
@@ -80,11 +93,41 @@ describe('SessionMetadata', () => {
     expect(await meta.read()).toMatchObject({ title: 't', archived: true });
   });
 
+  it('mirrors a boolean archived to the read model even when the loaded document lacks the field', async () => {
+    // A state.json written before `archived` existed: normalizeSessionMeta
+    // keeps the field undefined, and a naive mirror would drop the key from
+    // the cached JSON entirely (failing the read-model contract on reads).
+    const store = ix.get(IAtomicDocumentStore);
+    await store.set(META_SCOPE, 'state.json', {
+      id: 's1',
+      version: 2,
+      createdAt: 1700000000000,
+      updatedAt: 1700000000000,
+      agents: {},
+      custom: {},
+    });
+
+    const writes: unknown[] = [];
+    ix.stub(IQueryStore, {
+      ...stubQueryStore(),
+      put: async (_c: string, _k: string, value: unknown) => {
+        writes.push(value);
+      },
+    });
+    ix.stub(IFlagService, stubFlag(true));
+
+    const meta = ix.get(ISessionMetadata);
+    await meta.update({ title: 'x' });
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ id: 's1', archived: false });
+  });
+
   it('persists across instances', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.update({ title: 'persisted' });
 
-    const fresh = ix.createInstance(SessionMetadata);
+    const fresh = createFreshMetadata(ix);
     expect(await fresh.read()).toMatchObject({ id: 's1', title: 'persisted' });
   });
 
@@ -105,7 +148,7 @@ describe('SessionMetadata', () => {
 
     // The heal is persisted: a fresh instance reads the maps from disk, and
     // updatedAt is untouched so session listings keep their order.
-    const fresh = ix.createInstance(SessionMetadata);
+    const fresh = createFreshMetadata(ix);
     const healed = await fresh.read();
     expect(healed.agents).toEqual({});
     expect(healed.custom).toEqual({});

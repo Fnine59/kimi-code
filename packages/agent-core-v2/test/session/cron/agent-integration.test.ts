@@ -5,10 +5,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  CronCreateTool,
-  type CronCreateInput,
-} from '#/session/cron/tools/cron-create';
+import { type CronCreateInput } from '#/agent/tools/cron/cron-create/cron-create';
+import { CronCreateTool } from '#/agent/tools/cron/cron-create/cronCreateTool';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';

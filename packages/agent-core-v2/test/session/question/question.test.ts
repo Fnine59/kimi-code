@@ -1,18 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import {
   _clearScopedRegistryForTests,
   LifecycleScope,
+  ScopeActivation,
   registerScopedService,
   type Scope,
 } from '#/_base/di/scope';
-import { createScopedTestHost, type ScopedTestHost } from '#/_base/di/test';
+import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { SessionInteractionService } from '#/session/interaction/interactionService';
 import { type QuestionRequest, ISessionQuestionService } from '#/session/question/question';
 import { SessionQuestionService } from '#/session/question/questionService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
+import { IWorkspaceStateService } from '#/workspace/state/workspaceState';
+import { WorkspaceStateService } from '#/workspace/state/workspaceStateService';
 
 function makeRequest(id: string): QuestionRequest {
   return {
@@ -34,12 +38,15 @@ describe('ISessionQuestionService (Session scope facade over the interaction ker
 
   beforeEach(() => {
     _clearScopedRegistryForTests();
-    registerScopedService(LifecycleScope.Session, ISessionInteractionService, SessionInteractionService, InstantiationType.Delayed, 'interaction');
-    registerScopedService(LifecycleScope.Session, ISessionQuestionService, SessionQuestionService, InstantiationType.Delayed, 'question');
+    registerScopedService(LifecycleScope.Session, ISessionStateService, SessionStateService, ScopeActivation.OnScopeCreated, 'state');
+    registerScopedService(LifecycleScope.Session, ISessionInteractionService, SessionInteractionService, ScopeActivation.OnDemand, 'interaction');
+    registerScopedService(LifecycleScope.Session, ISessionQuestionService, SessionQuestionService, ScopeActivation.OnDemand, 'question');
 
     disposables = new DisposableStore();
     host = createScopedTestHost();
-    session = host.child(LifecycleScope.Session, 'session-a');
+    session = host.child(LifecycleScope.Session, 'session-a', [
+      stubPair(IWorkspaceStateService, new WorkspaceStateService()),
+    ]);
   });
 
   afterEach(() => {
@@ -160,7 +167,9 @@ describe('ISessionQuestionService (Session scope facade over the interaction ker
   });
 
   it('Session scope isolates brokers: a question parked in A is invisible to B', () => {
-    const sessionB = host.child(LifecycleScope.Session, 'session-b');
+    const sessionB = host.child(LifecycleScope.Session, 'session-b', [
+      stubPair(IWorkspaceStateService, new WorkspaceStateService()),
+    ]);
     const questionsA = session.accessor.get(ISessionQuestionService);
     const questionsB = sessionB.accessor.get(ISessionQuestionService);
 

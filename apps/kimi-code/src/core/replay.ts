@@ -28,6 +28,7 @@ import {
   IAgentToolRegistryService,
   IAgentUsageService,
   IAppendLogStore,
+  ISessionContext,
   ISessionMetadata,
   ISessionTodoService,
   IWireService,
@@ -83,7 +84,8 @@ export async function buildResumedAgents(
   const state: ResumedAgentState = {
     type: 'main',
     config: {
-      cwd: data.cwd,
+      // `cwd` left the per-agent profile data; the session context owns it now.
+      cwd: session.accessor.get(ISessionContext).cwd,
       // TODO(v2-gap): v2 has no per-agent provider config DTO; always undefined.
       provider: undefined,
       modelAlias: data.modelAlias,

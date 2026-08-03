@@ -1,27 +1,25 @@
 /**
- * `swarm` domain (L4) — `IAgentSwarmService` implementation.
+ * `swarm` domain — `IAgentSwarmService` implementation.
  *
  * Tracks swarm-mode enter/exit in the `wire` `SwarmModel` (mutated only through
  * the `swarm_mode.enter` / `swarm_mode.exit` Ops, read through `wire.getModel`),
  * mirrors it into `systemReminder` as live-only side effects, derives
  * `agent.status.updated` from the Ops' `toEvent`, and auto-exits on turn end via
  * `turn`. The enter-reminder removal on exit is a cross-model fold on
- * `ContextModel` (see `contextOps.ts`): dispatching `swarm_mode.exit` pops the
+ * `ContextModel`: dispatching `swarm_mode.exit` pops the
  * reminder when it is the last message, both live and on replay — exactly like
  * v1's restore-time `popMatchedMessage`. The service only publishes the
  * live-only `context.spliced` event for that pop (so injector bookkeeping
  * stays in step) and appends the exit reminder when nothing was
- * popped. Bound at Agent scope. The `AgentSwarm` tool self-registers via
- * `registerTool(...)` in `tools/agent-swarm.ts`. The service also guards
- * AgentSwarm batch exclusivity through an `onBeforeExecuteTool` veto
+ * popped. Bound at Agent scope. The service also guards AgentSwarm batch
+ * exclusivity through an `onBeforeExecuteTool` veto
  * listener: an AgentSwarm call must be the only tool call in its batch,
  * anything else is vetoed with a `toolApproval.formatDenyMessage`-formatted
  * reason.
  */
 
 import { Disposable } from '#/_base/di/lifecycle';
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
@@ -123,7 +121,7 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentSwarmService,
   AgentSwarmService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'swarm',
 );
 

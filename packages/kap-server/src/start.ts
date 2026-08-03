@@ -9,7 +9,6 @@
 
 import {
   bootstrap,
-  hostRequestHeadersSeed,
   IConfigService,
   IProviderDiscoveryService,
   IWorkspaceService,
@@ -17,10 +16,13 @@ import {
   resolveConfigPath,
   resolveKimiHome,
   resolveLoggingConfig,
-  skillCatalogRuntimeOptionsSeed,
   type Scope,
   type ScopeSeed,
 } from '@moonshot-ai/agent-core-v2';
+import {
+  createKimiDefaultHeaders,
+  type KimiHostIdentity,
+} from '@moonshot-ai/kimi-code-oauth';
 import { createAsyncApiDocument } from './protocol/asyncapi';
 import Fastify, { type FastifyInstance } from 'fastify';
 
@@ -61,6 +63,11 @@ import { createSecurityHeadersHook } from './middleware/securityHeaders';
 import { createAuthHook } from './middleware/auth';
 import { GuiStoreService } from './services/guiStore/guiStoreService';
 import { loadSnapshotConfig, SnapshotReader } from './services/snapshot';
+import {
+  initializeServerTelemetry,
+  type ServerTelemetry,
+  shutdownServerTelemetry,
+} from './services/telemetry';
 import { TranscriptService } from './services/transcript/transcriptService';
 import { ModelCatalogRefreshScheduler } from './services/modelCatalog/modelCatalogRefreshScheduler';
 import { createAuthFailureLimiter } from './middleware/rateLimit';
@@ -71,6 +78,19 @@ import {
 import { createCredentialValidator } from './services/auth/credentials';
 import { resolvePasswordHash } from './services/auth/password';
 import { createTokenStore } from './services/auth/tokenStore';
+
+// Temporary feature: global message search. Importing this module registers
+// `IGlobalSearchService` (App scope) into the DI registry as a side effect, so
+// it MUST stay above any `bootstrap()` call — registration happens at module
+// evaluation time.
+import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
+
+export interface ServerHostIdentity extends KimiHostIdentity {
+  /** Fills the `${product_name}` slot in the base system prompt. Defaults render the CLI text. */
+  readonly displayName?: string;
+  /** Replaces the `${reply_style_guide}` block in the base system prompt. */
+  readonly replyStyleGuide?: string;
+}
 
 export interface ServerStartOptions {
   readonly host?: string;
@@ -105,6 +125,15 @@ export interface ServerStartOptions {
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
   /**
+   * Identity of the host product embedding the server: feeds the engine's
+   * `bootstrap()` client identity, the default outbound request headers
+   * (User-Agent + `X-Msh-*` via `createKimiDefaultHeaders`), and the session
+   * export manifest. Applied to every agent and request the server hosts —
+   * required, so every host states its own product name, version, and
+   * platform explicitly.
+   */
+  readonly hostIdentity: ServerHostIdentity;
+  /**
    * Explicit skill directories for this process (v1's SDK `skillDirs`): when
    * non-empty, default user / project skill discovery is skipped and these
    * directories serve as the user skill source for every session. Applied to
@@ -118,12 +147,20 @@ export interface ServerStartOptions {
    */
   readonly webAssetsDir?: string;
   /**
-   * Host product version, reported as `server_version` (GET /api/v1/meta), in
-   * the OpenAPI document, session exports, the lock / instance registry, and
-   * the default User-Agent. Defaults to kap-server's own package version;
-   * embedding hosts (the CLI) should pass their own version.
+   * Engine version, reported as `server_version` (GET /api/v1/meta), in the
+   * OpenAPI document, and in the lock / instance registry. Defaults to
+   * kap-server's own package version; the host product version travels in
+   * `hostIdentity.version` instead.
    */
-  readonly version?: string;
+  readonly serverVersion?: string;
+  /**
+   * Opt-in cloud telemetry for the engine's `ITelemetryService` events: when
+   * true, a `CloudAppender` is attached at startup (still gated by the config
+   * `telemetry` toggle) and flushed on close. Defaults to false so tests and
+   * embedding hosts that wire their own telemetry never post to the real
+   * endpoint unintentionally; the CLI's `kimi web` host passes true.
+   */
+  readonly telemetry?: boolean;
 }
 
 export interface RunningServer {
@@ -139,7 +176,7 @@ export interface RunningServer {
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 58627;
 
-export async function startServer(opts: ServerStartOptions = {}): Promise<RunningServer> {
+export async function startServer(opts: ServerStartOptions): Promise<RunningServer> {
   const host = opts.host ?? DEFAULT_HOST;
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKimiHome(opts.homeDir);
@@ -149,7 +186,7 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
   // tooling) can discover the live instances. Port conflicts between siblings
   // are resolved by the `port + 1` retry below. The registration is released
   // on close and on any boot refusal below.
-  const hostVersion = opts.version ?? getServerVersion();
+  const serverVersion = opts.serverVersion ?? getServerVersion();
   const registry = createInstanceRegistry({
     instancesDir: opts.instancesDir ?? join(homeDir, 'server', 'instances'),
   });
@@ -158,7 +195,7 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
     host,
     port,
     startedAt: Date.now(),
-    hostVersion,
+    serverVersion,
   });
   const exposureClass = classify(host, { bindClass: opts.bindClass });
   if (exposureClass !== 'loopback' && opts.insecureNoTls !== true) {
@@ -202,16 +239,40 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
   // rooted at `homeDir`, so the Store facades above it (append-log, atomic
   // document, blob) — and in turn session metadata, wire records, blobs, and
   // the session index — all persist to disk.
-  const { app: core } = bootstrap({ homeDir, configPath }, [
-    ...logSeed(logging),
-    // Default host identity so outbound requests (model, WebSearch, registry
-    // refresh) carry a product User-Agent even when the embedding host did not
-    // seed its own headers. Hosts like the CLI pass full Kimi identity headers
-    // through `opts.seeds`, which override this entry (last seed wins).
-    ...hostRequestHeadersSeed({ 'User-Agent': `kimi-code-cli/${hostVersion}` }),
-    ...skillCatalogRuntimeOptionsSeed(opts.skillDirs),
-    ...(opts.seeds ?? []),
-  ]);
+  const { app: core } = bootstrap(
+    {
+      homeDir,
+      configPath,
+      clientIdentity: opts.hostIdentity,
+      args: {
+        // Default host identity headers derived from `hostIdentity`: outbound
+        // requests (model, WebSearch, registry refresh) carry the host
+        // product's User-Agent + X-Msh-* set.
+        requestHeaders: createKimiDefaultHeaders({ homeDir, ...opts.hostIdentity }),
+        skillDirs: opts.skillDirs,
+        displayName: opts.hostIdentity.displayName,
+        replyStyleGuide: opts.hostIdentity.replyStyleGuide,
+      },
+    },
+    [...logSeed(logging), ...(opts.seeds ?? [])],
+  );
+
+  // Attach the cloud telemetry appender BEFORE any session is created:
+  // `session_started` / `session_load_failed` fire inside create()/resume(), so
+  // an appender wired later would drop them to the null appender. Opt-in via
+  // `opts.telemetry` (off by default so tests never post to the real endpoint);
+  // best-effort — telemetry must never block server boot.
+  let telemetry: ServerTelemetry = {};
+  if (opts.telemetry === true) {
+    try {
+      telemetry = await initializeServerTelemetry(core, homeDir);
+    } catch (error) {
+      logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'telemetry initialization failed; continuing without telemetry',
+      );
+    }
+  }
 
   if (exposureClass !== 'loopback') {
     logger.warn(
@@ -292,12 +353,32 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
     await app.close();
     authFailureLimiter?.dispose();
     modelCatalogRefreshScheduler.dispose();
-    core.dispose();
-    await registration.release();
+    // Telemetry is best-effort and must never prevent core or instance cleanup.
+    try {
+      await shutdownServerTelemetry(telemetry);
+    } catch (error) {
+      logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'telemetry shutdown failed; continuing server cleanup',
+      );
+    }
+    try {
+      core.dispose();
+      // `core.dispose()` triggers the search service's synchronous `dispose()`,
+      // whose minidb close is asynchronous — await it before releasing the
+      // instance registration (and before embedding hosts tear down homeDir).
+      await drainGlobalSearchDisposals();
+    } finally {
+      await registration.release();
+    }
   };
 
   const connectionRegistry = new ConnectionRegistry();
   const transcriptService = new TranscriptService({ homeDir, core, logger });
+  // The global search service is DI-managed (App scope) while the transcript
+  // service is constructed here by hand — wire the former to the latter so
+  // container-scoped searches on live sessions scan the in-memory transcript.
+  core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
   const broadcaster = new SessionEventBroadcaster({
     eventsDir: join(homeDir, 'server', 'events'),
     core,
@@ -313,8 +394,6 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
     logger,
     config: loadSnapshotConfig(),
   });
-
-  const serverVersion = hostVersion;
 
   async function registerOpenApi(): Promise<void> {
     const { default: swagger } = await import('@fastify/swagger');
@@ -334,6 +413,7 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
           { name: 'sessions', description: 'Session lifecycle' },
           { name: 'workspaces', description: 'Workspace registry + folder picker' },
           { name: 'messages', description: 'Message history' },
+          { name: 'search', description: 'Global message search' },
           { name: 'transcript', description: 'Turn-granular session transcript' },
           { name: 'prompts', description: 'Prompt submission & abort' },
           { name: 'approvals', description: 'Approval resolution' },
@@ -360,6 +440,7 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
 
   await registerApiV1Routes(app, core, {
     serverVersion,
+    hostIdentity: opts.hostIdentity,
     debugEndpoints,
     enableShutdown,
     enableTerminals,

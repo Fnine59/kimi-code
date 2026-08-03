@@ -7,17 +7,18 @@
  * a do-not-retry reason), and the accepted receipt landing in history IS the
  * trim, re-derived by the projection on every read. A malformed slice shape
  * (not exactly one of head / tail / anchor) rejects here with a retryable
- * reason, before any receipt exists. Self-registers via `registerTool` gated
- * on BOTH the `KIMI_CODE_SPINE` and `KIMI_CODE_SPINE_TRIM` flags and
- * `agentId === 'main'` (main-agent-only, like the other spine tools). Bound
- * at Agent scope.
+ * reason, before any receipt exists. Self-registers via
+ * `registerAgentToolService` gated on BOTH the `KIMI_CODE_SPINE` and
+ * `KIMI_CODE_SPINE_TRIM` flags and `agentId === 'main'` (main-agent-only, like
+ * the other spine tools). Bound at Agent scope.
  */
 
 import { z } from 'zod';
 
+import { createDecorator } from '#/_base/di/instantiation';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import type { BuiltinTool, ToolExecution } from '#/tool/toolContract';
-import { registerTool } from '#/agent/toolRegistry/toolContribution';
+import type { AgentTool, ToolExecution } from '#/tool/toolContract';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { SPINE_FLAG_ID, SPINE_TRIM_FLAG_ID } from '#/agent/spine/flag';
@@ -51,7 +52,13 @@ export type SpineTrimInput = z.infer<typeof SpineTrimInputSchema>;
 const REJECT_SLICE_SHAPE =
   'op="slice" requires exactly one of head, tail, or anchor; correct the arguments and retry.';
 
-export class SpineTrimTool implements BuiltinTool<SpineTrimInput> {
+export interface ISpineTrimTool extends AgentTool<SpineTrimInput> {
+  readonly _serviceBrand: undefined;
+}
+export const ISpineTrimTool = createDecorator<ISpineTrimTool>('spineTrimTool');
+
+export class SpineTrimTool implements ISpineTrimTool {
+  declare readonly _serviceBrand: undefined;
   readonly name = SPINE_TOOL_TRIM;
   readonly description = SPINE_TRIM_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(SpineTrimInputSchema);
@@ -71,7 +78,9 @@ export class SpineTrimTool implements BuiltinTool<SpineTrimInput> {
   }
 }
 
-registerTool(SpineTrimTool, {
+registerAgentToolService(ISpineTrimTool, SpineTrimTool, {
+  name: SPINE_TOOL_TRIM,
+  domain: 'spine',
   when: (accessor) =>
     accessor.get(IFlagService).enabled(SPINE_FLAG_ID) &&
     accessor.get(IFlagService).enabled(SPINE_TRIM_FLAG_ID) &&

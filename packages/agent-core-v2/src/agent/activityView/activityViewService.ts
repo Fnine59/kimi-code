@@ -1,5 +1,5 @@
 /**
- * `activityView` domain (L4) — `IAgentActivityView` implementation.
+ * `activityView` domain — `IAgentActivityView` implementation.
  *
  * A pure fold of the agent's own event bus: turn boundaries drive the turn
  * slice (active → detail updates → ended → `lastTurn`), step/delta/tool/retry
@@ -8,14 +8,20 @@
  * the background-work slice. The view seeds once from `IAgentLoopService`,
  * `IAgentTaskService`, and `IAgentFullCompactionService` (reads, never writes)
  * and otherwise holds only derived state, so it can be discarded and rebuilt
- * at any time. Bound at Agent scope.
+ * at any time. The mutable view state (`lifecycle`, `turn`, `lastTurn`,
+ * `background`, `current`) is registered into `agentState`
+ * (`IAgentStateService`) and read/written through it; the event-bus
+ * subscription handles stay mechanism held by the `Disposable` base, and
+ * `MutableTurn`'s in-place-mutated Maps stay instance fields of that
+ * per-turn class. Bound at Agent scope.
  */
 
 import { Disposable } from '#/_base/di/lifecycle';
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { defineState } from '#/_base/state/stateRegistry';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { USER_PROMPT_ORIGIN } from '#/agent/contextMemory/types';
@@ -38,22 +44,43 @@ import { IAgentActivityView } from './activityView';
 type EndingReason = NonNullable<ActivityTurnState['endingReason']>;
 const FULL_COMPACTION_BACKGROUND_ID = 'full-compaction';
 
+export const activityViewLifecycleKey = defineState<ActivityViewLifecycle>(
+  'activityView.lifecycle',
+  () => 'ready',
+);
+export const activityViewTurnKey = defineState<MutableTurn | undefined>(
+  'activityView.turn',
+  () => undefined as MutableTurn | undefined,
+);
+export const activityViewLastTurnKey = defineState<ActivityLastTurnState | undefined>(
+  'activityView.lastTurn',
+  () => undefined as ActivityLastTurnState | undefined,
+);
+export const activityViewBackgroundKey = defineState<Map<string, BackgroundRef>>(
+  'activityView.background',
+  () => new Map(),
+);
+export const activityViewCurrentKey = defineState<AgentActivityState>('activityView.current', () => ({
+  lifecycle: 'ready',
+  background: [],
+}));
+
 export class AgentActivityView extends Disposable implements IAgentActivityView {
   declare readonly _serviceBrand: undefined;
-
-  private lifecycle: ActivityViewLifecycle = 'ready';
-  private turn: MutableTurn | undefined;
-  private lastTurn: ActivityLastTurnState | undefined;
-  private readonly background = new Map<string, BackgroundRef>();
-  private current: AgentActivityState = { lifecycle: 'ready', background: [] };
 
   constructor(
     @IEventBus private readonly eventBus: IEventBus,
     @IAgentLoopService private readonly loop: IAgentLoopService,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentFullCompactionService private readonly fullCompaction: IAgentFullCompactionService,
+    @IAgentStateService private readonly states: IAgentStateService,
   ) {
     super();
+    this.states.register(activityViewLifecycleKey);
+    this.states.register(activityViewTurnKey);
+    this.states.register(activityViewLastTurnKey);
+    this.states.register(activityViewBackgroundKey);
+    this.states.register(activityViewCurrentKey);
     this.seedFromLoop();
     this.seedFromTasks();
     this.seedFromFullCompaction();
@@ -145,6 +172,42 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     );
   }
 
+  private get lifecycle(): ActivityViewLifecycle {
+    return this.states.get(activityViewLifecycleKey);
+  }
+
+  private set lifecycle(value: ActivityViewLifecycle) {
+    this.states.set(activityViewLifecycleKey, value);
+  }
+
+  private get turn(): MutableTurn | undefined {
+    return this.states.get(activityViewTurnKey);
+  }
+
+  private set turn(value: MutableTurn | undefined) {
+    this.states.set(activityViewTurnKey, value);
+  }
+
+  private get lastTurn(): ActivityLastTurnState | undefined {
+    return this.states.get(activityViewLastTurnKey);
+  }
+
+  private set lastTurn(value: ActivityLastTurnState | undefined) {
+    this.states.set(activityViewLastTurnKey, value);
+  }
+
+  private get background(): Map<string, BackgroundRef> {
+    return this.states.get(activityViewBackgroundKey);
+  }
+
+  private get current(): AgentActivityState {
+    return this.states.get(activityViewCurrentKey);
+  }
+
+  private set current(value: AgentActivityState) {
+    this.states.set(activityViewCurrentKey, value);
+  }
+
   state(): AgentActivityState {
     return this.current;
   }
@@ -155,8 +218,6 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     super.dispose();
   }
 
-  // -------------------------------------------------------------------------
-
   private seedFromLoop(): void {
     const status = this.loop.status();
     if (status.state !== 'running' || status.activeTurnId === undefined) return;
@@ -164,8 +225,6 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     this.publish();
   }
 
-  /** Seed the background slice from the task registry (restart-persistent
-   *  tasks may already be running when the view is created). */
   private seedFromTasks(): void {
     for (const info of this.tasks.list(true)) {
       this.background.set(info.taskId, { kind: info.kind, id: info.taskId, since: info.startedAt });
@@ -189,17 +248,12 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
 
   private onTurnStarted(turnId: number, origin?: PromptOrigin): void {
     this.turn = new MutableTurn(turnId, origin ?? USER_PROMPT_ORIGIN);
-    // A fresh turn means there is no current outcome: drop the previous
-    // turn's terminal reason so consumers (the work_changed fold, REST
-    // session facts) stop reporting it while this turn runs. turn.ended
-    // publishes the new outcome when the turn finishes.
     this.lastTurn = undefined;
     this.publish();
   }
 
   private onTurnEnded(turnId: number, reason: TurnEndReason): void {
     if (this.turn === undefined || this.turn.turnId !== turnId) {
-      // A turn the view never saw (e.g. seeded late) — still record the outcome.
       this.lastTurn = { turnId, reason, at: Date.now() };
       this.publish();
       return;
@@ -264,8 +318,6 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
       t.pendingApprovals.delete(toolCallId);
     });
   }
-
-  // -------------------------------------------------------------------------
 
   private mutateTurn(mutate: (t: MutableTurn) => void): void {
     if (this.turn === undefined) return;
@@ -359,6 +411,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentActivityView,
   AgentActivityView,
-  InstantiationType.Delayed,
+  ScopeActivation.OnScopeCreated,
   'activityView',
 );

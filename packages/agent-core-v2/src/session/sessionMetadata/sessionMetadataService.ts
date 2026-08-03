@@ -1,38 +1,39 @@
 /**
- * `sessionMetadata` domain (L6) — `ISessionMetadata` implementation.
+ * `sessionMetadata` domain — `ISessionMetadata` implementation.
  *
  * Persists the session metadata document (`state.json`) through the `storage`
  * access-pattern store (`IAtomicDocumentStore`), rooted at the `metaScope`
  * namespace from `sessionContext`. Loads the existing document on
  * construction (creating it on first run), and logs through `log`. The
- * document always carries the `agents` / `custom` maps that v1's
- * `Session.resume()` reads unconditionally — seeded at creation, backfilled
- * and persisted on load for documents written before the seeding existed
- * (without touching `updatedAt`, so a format heal never reorders session
- * listings) — keeping sessions on a shared `KIMI_CODE_HOME` resumable by
- * released v1 builds. Re-registering an agent whose metadata is unchanged is
+ * plain-data state (`data`) is registered into `sessionState`
+ * (`ISessionStateService`) and read/written through it. The
+ * document always carries the `agents` / `custom` maps — seeded at creation,
+ * backfilled and persisted on load for documents written before the seeding
+ * existed (without touching `updatedAt`, so a format heal never reorders
+ * session listings). Re-registering an agent whose metadata is unchanged is
  * a no-op (no write, no mirror, no event), so resuming a session — which
  * re-registers its agents as they materialize — never bumps `updatedAt` and
  * never reorders session listings. Bound at Session scope.
  *
  * Read-model mirroring (flag `persistence_minidb_readmodel`): after a metadata
  * update is persisted, the fresh summary is mirrored into the `IQueryStore`
- * derived read model so `FileSessionIndex` can serve listings without
- * re-reading `state.json`. Mirroring is best-effort (a failure is logged, not
+ * derived read model so session listings can be served without re-reading
+ * `state.json`. Mirroring is best-effort (a failure is logged, not
  * thrown) and is a no-op when the flag is off. Initial creation in `load()` is
  * intentionally not mirrored — a not-yet-mirrored session is simply a cold
- * read-model miss that `FileSessionIndex` backfills on first read.
+ * read-model miss that is backfilled on first read.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { Disposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { defineState } from '#/_base/state/stateRegistry';
 import { IFlagService } from '#/app/flag/flag';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IQueryStore } from '#/persistence/interface/queryStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionStateService } from '#/session/state/sessionState';
 
 import {
   ISessionMetadata,
@@ -47,6 +48,11 @@ const META_KEY = 'state.json';
 const SESSION_COLLECTION = 'session';
 const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 
+export const sessionMetadataDataKey = defineState<SessionMeta | undefined>(
+  'sessionMetadata.data',
+  () => undefined,
+);
+
 export class SessionMetadata extends Disposable implements ISessionMetadata {
   declare readonly _serviceBrand: undefined;
   readonly ready: Promise<void>;
@@ -57,9 +63,9 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
   );
   private readonly scope: string;
   private updateQueue: Promise<void> = Promise.resolve();
-  private data!: SessionMeta;
 
   constructor(
+    @ISessionStateService private readonly states: ISessionStateService,
     @ISessionContext private readonly ctx: ISessionContext,
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @ILogService private readonly log: ILogService,
@@ -67,9 +73,18 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
     @IFlagService private readonly flags: IFlagService,
   ) {
     super();
+    this.states.register(sessionMetadataDataKey);
     this.scope = ctx.metaScope;
     this.onDidChangeMetadata = this._onDidChangeMetadata.event;
     this.ready = this.load();
+  }
+
+  private get data(): SessionMeta {
+    return this.states.get(sessionMetadataDataKey) as SessionMeta;
+  }
+
+  private set data(value: SessionMeta) {
+    this.states.set(sessionMetadataDataKey, value);
   }
 
   async read(): Promise<SessionMeta> {
@@ -126,7 +141,7 @@ export class SessionMetadata extends Disposable implements ISessionMetadata {
         lastPrompt: this.data.lastPrompt,
         createdAt: this.data.createdAt,
         updatedAt: this.data.updatedAt,
-        archived: this.data.archived,
+        archived: this.data.archived === true,
         custom: this.data.custom,
       });
     } catch (error) {
@@ -222,6 +237,6 @@ registerScopedService(
   LifecycleScope.Session,
   ISessionMetadata,
   SessionMetadata,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'sessionMetadata',
 );

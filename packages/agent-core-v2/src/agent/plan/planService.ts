@@ -1,5 +1,5 @@
 /**
- * `plan` domain (L3) — `IAgentPlanService` implementation.
+ * `plan` domain — `IAgentPlanService` implementation.
  *
  * Manages plan-mode state through `wire`, injects plan-mode context through
  * `contextInjector`, writes optional plan files through `hostFileSystem`,
@@ -7,8 +7,7 @@
  * revisions: `recordRevision` reads the current plan file, writes it
  * atomically through `IBlobStore` under the agent's own persistence scope
  * (`agentCtx.scope()`, i.e. the homeDir-relative
- * `sessions/<ws>/<sid>/agents/<agentId>` root — the same rooting
- * `IAgentBlobService` uses for its `blobs` child scope) with the key
+ * `sessions/<ws>/<sid>/agents/<agentId>` root) with the key
  * `plan/<id>/v<N>.md`, and dispatches a reference-only `plan.revision` op
  * carrying the homeDir-relative path, sha256 and byte length. N comes from
  * the Model's replayed per-id `revisionCount`, starting at 1. Also carries
@@ -26,8 +25,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'pathe';
 
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { generateHeroSlug } from '#/_base/utils/hero-slug';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -35,6 +33,7 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { PlanModeInjection } from '#/agent/plan/injection/planModeInjection';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
@@ -42,6 +41,7 @@ import type {
   BeforeToolExecuteEvent,
   ResolvedToolExecutionHookContext,
 } from '#/agent/toolExecutor/toolHooks';
+import { IEventBus } from '#/app/event/eventBus';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -74,6 +74,7 @@ export class AgentPlanService extends Disposable implements IAgentPlanService {
     @IBlobStore private readonly blobs: IBlobStore,
     @IAgentContextInjectorService dynamicInjector: IAgentContextInjectorService,
     @IAgentTelemetryContextService private readonly telemetryContext: IAgentTelemetryContextService,
+    @IEventBus eventBus: IEventBus,
     @IWireService private readonly wire: IWireService,
     @ISessionContext private readonly sessionCtx: ISessionContext,
     @IAgentScopeContext private readonly agentCtx: IAgentScopeContext,
@@ -81,6 +82,7 @@ export class AgentPlanService extends Disposable implements IAgentPlanService {
     @IAgentToolApprovalService private readonly toolApproval: IAgentToolApprovalService,
     @IAgentPermissionModeService private readonly modeService: IAgentPermissionModeService,
     @ITelemetryService telemetry: ITelemetryService,
+    @IAgentStateService states: IAgentStateService,
   ) {
     super();
 
@@ -92,8 +94,17 @@ export class AgentPlanService extends Disposable implements IAgentPlanService {
         await next();
       }),
     );
+    this._register(
+      eventBus.subscribe('context.undone', () => {
+        this.restoreTelemetryMode();
+        eventBus.publish({
+          type: 'agent.status.updated',
+          planMode: this.isActive,
+        });
+      }),
+    );
 
-    this._register(new PlanModeInjection(dynamicInjector, this, this.context));
+    this._register(new PlanModeInjection(dynamicInjector, this, this.context, states));
     this._register(this.registerPlanGuard(toolExecutor));
   }
 
@@ -151,19 +162,17 @@ export class AgentPlanService extends Disposable implements IAgentPlanService {
   }
 
   private get isActive(): boolean {
-    return this.wire.getModel(PlanModel).active;
+    return this.wire.getModel(PlanModel).current.active;
   }
 
   private currentPlanFilePath(): PlanFilePath {
-    const state = this.wire.getModel(PlanModel);
+    const state = this.wire.getModel(PlanModel).current;
     if (!state.active || state.id === undefined) return null;
     return this.planFilePathFor(state.id);
   }
 
   private restoreTelemetryMode(): void {
-    if (this.isActive) {
-      this.telemetryContext.set({ mode: 'plan' });
-    }
+    this.telemetryContext.set({ mode: this.isActive ? 'plan' : 'agent' });
   }
 
   private createPlanId(): string {
@@ -210,7 +219,7 @@ export class AgentPlanService extends Disposable implements IAgentPlanService {
   }
 
   async recordRevision(): Promise<void> {
-    const state = this.wire.getModel(PlanModel);
+    const state = this.wire.getModel(PlanModel).current;
     if (!state.active || state.id === undefined) return;
     const id = state.id;
     const content = await this.hostFs.readText(this.planFilePathFor(id));
@@ -231,7 +240,7 @@ export class AgentPlanService extends Disposable implements IAgentPlanService {
   }
 
   async status(): Promise<PlanData> {
-    const state = this.wire.getModel(PlanModel);
+    const state = this.wire.getModel(PlanModel).current;
     if (!state.active || state.id === undefined) return null;
     const path = this.planFilePathFor(state.id);
     let content = '';
@@ -294,6 +303,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentPlanService,
   AgentPlanService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'plan',
 );

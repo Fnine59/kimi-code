@@ -95,6 +95,7 @@ function makeStartupInput(
       editorCommand: null,
       notifications: { enabled: true, condition: 'unfocused' },
       upgrade: { autoInstall: true },
+      statusLine: { items: null, command: null },
       ...tuiConfig,
     },
     version: '0.0.0-test',
@@ -236,6 +237,7 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
     track: vi.fn(),
     setTelemetryContext: vi.fn(),
     getExperimentalFeatures: vi.fn(async () => []),
+    supportsAtomicSectionReplace: vi.fn(() => false),
     auth: {
       status: vi.fn(async () => ({ providers: [] })),
       login: vi.fn(async () => {}),
@@ -1183,6 +1185,58 @@ describe('KimiTUI startup', () => {
 
     expect(showStatus).toHaveBeenCalledTimes(1);
     expect(showStatus).toHaveBeenCalledWith("New Models · +2 models.");
+  });
+
+  it("keeps the two-phase removeProvider/setConfig host on harnesses without atomic replace", async () => {
+    const registryUrl = "https://registry.example.test/v1/models/api.json";
+    const source = { kind: "apiJson", url: registryUrl, apiKey: "sk-test-token" };
+    const replaceConfigSections = vi.fn(async () => {});
+    const removeProvider = vi.fn(async () => ({}));
+    const setConfig = vi.fn(async (patch: Record<string, unknown>) => patch);
+    const harness = makeHarness(makeSession(), {
+      replaceConfigSections,
+      removeProvider,
+      setConfig,
+      getConfig: vi.fn(async () => ({
+        providers: {
+          a: { type: "openai", baseUrl: "https://a.example.test/v1", apiKey: "sk-test-token", source },
+          b: { type: "openai", baseUrl: "https://b.example.test/v1", apiKey: "sk-test-token", source },
+        },
+        models: {
+          "a/m1": { provider: "a", model: "m1", maxContextSize: 100, capabilities: ["tool_use"] },
+          "b/m1": { provider: "b", model: "m1", maxContextSize: 100, capabilities: ["tool_use"] },
+        },
+        defaultModel: "b/m1",
+      })),
+    });
+    const driver = makeDriver(harness, makeStartupInput());
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            a: {
+              id: "a",
+              name: "Provider A",
+              api: "https://a.example.test/v1",
+              type: "openai",
+              models: { m1: { id: "m1" } },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    try {
+      const result = await (driver as any).authFlow.refreshProviderModels();
+
+      expect(result.failed).toEqual([]);
+      expect(removeProvider).toHaveBeenCalledWith("b");
+      expect(setConfig).toHaveBeenCalledTimes(1);
+      expect(replaceConfigSections).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("enters the login-required state when the deferred session creation needs OAuth login", async () => {

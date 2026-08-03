@@ -29,14 +29,16 @@ import {
   IAgentUsageService,
   IConfigService,
   IModelCatalog,
+  IPluginService,
   ISessionApprovalService,
   ISessionBtwService,
   ISessionContext,
   ISessionInteractionService,
   ISessionMetadata,
   ISessionQuestionService,
+  ISessionSecondaryModelWarningService,
   ISessionSkillCatalog,
-  ISessionWorkspaceCommandService,
+  IWorkspaceDirs,
   MAIN_AGENT_ID,
   summarizeSkill,
   type ContentPart,
@@ -45,6 +47,7 @@ import {
   type Interaction,
   type ISessionScopeHandle,
   type Scope,
+  type SecondaryModelConfig,
 } from '@moonshot-ai/agent-core-v2';
 
 import { CoreError, CoreErrorCodes } from './errors';
@@ -62,6 +65,7 @@ import type {
   PendingQuestion,
   PermissionMode,
   PlanData,
+  PluginSummary,
   PromptPart,
   QuestionResult,
   ResumedSessionState,
@@ -358,6 +362,11 @@ export class CoreSession {
     return skills.catalog.listSkills().map((skill) => summarizeSkill(skill));
   }
 
+  /** App-scope plugin listing, exposed on the session for v1-shaped consumers (update notifier). */
+  async listPlugins(): Promise<readonly PluginSummary[]> {
+    return this.init.app.accessor.get(IPluginService).listPlugins();
+  }
+
   getResumeState(): ResumedSessionState | undefined {
     return this.init.resumeState;
   }
@@ -429,8 +438,31 @@ export class CoreSession {
     persist?: boolean;
   }): Promise<WorkspaceAdditionalDirsResult> {
     return await this.init.handle.accessor
-      .get(ISessionWorkspaceCommandService)
-      .addAdditionalDir({ path: input.path, persist: input.persist });
+      .get(IWorkspaceDirs)
+      .addDir({ path: input.path, persist: input.persist });
+  }
+
+  /**
+   * Re-apply the persisted `[secondary_model]` recipe to this session. v2
+   * resolves the subagent binding live against `IConfigService` at spawn time,
+   * so a `setConfig` write already takes effect session-wide — what remains is
+   * the reload (the recipe may have been persisted through another channel),
+   * the loud validation, and the warning-cache refresh.
+   */
+  async applyPersistedSecondaryModel(): Promise<void> {
+    const config = this.init.app.accessor.get(IConfigService);
+    await config.reload();
+    const secondary = config.get<SecondaryModelConfig | undefined>('secondaryModel');
+    if (secondary?.model === undefined) {
+      throw new CoreError(
+        CoreErrorCodes.CONFIG_INVALID,
+        'Cannot set the secondary model: persist its recipe before applying it to a session.',
+      );
+    }
+    this.init.app.accessor.get(IModelCatalog).get(secondary.model);
+    this.init.handle.accessor
+      .get(ISessionSecondaryModelWarningService)
+      .recheckSecondaryModelWarning();
   }
 
   async generateAgentsMd(): Promise<void> {

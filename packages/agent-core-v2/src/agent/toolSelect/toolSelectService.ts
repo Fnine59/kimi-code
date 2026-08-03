@@ -1,20 +1,22 @@
 /**
- * `toolSelect` domain (L4) — `IAgentToolSelectService` implementation.
+ * `toolSelect` domain — `IAgentToolSelectService` implementation.
  *
  * Shapes the provider-visible tool and history views for progressive tool
- * disclosure, loads MCP schemas into `contextMemory`, and exposes
+ * disclosure, loads dynamic schemas into `contextMemory`, and exposes
  * loadable-tools announcement text. The history view rides the context
  * projector as a VIEW-order fold (`shapeHistory`, self-gated by `enabled()`),
  * so index-anchored COLLAPSE folds such as spine see the untouched live
  * history first; llmRequester only shapes the tool list directly. Reads live
  * tools from `toolRegistry`, active-tool and capability state from `profile`,
  * gates through `flag`, hooks into `toolExecutor`, and listens to context
- * lifecycle events through `event`. Bound at Agent scope.
+ * lifecycle events through `event`. The mutable load-tracking state
+ * (`pendingLoaded`) is registered into `agentState` (`IAgentStateService`)
+ * and read/written through it. Bound at Agent scope.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { Disposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { defineState } from '#/_base/state/stateRegistry';
 import { IEventBus } from '#/app/event/eventBus';
 import { IFlagService } from '#/app/flag/flag';
 import type { Tool } from '#/kosong/contract/tool';
@@ -25,8 +27,9 @@ import {
   IAgentContextProjectorService,
 } from '#/agent/contextProjector/contextProjector';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
-import type { ToolInfo } from '#/tool/toolContract';
+import { isMcpToolName, type ToolInfo } from '#/tool/toolContract';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 
@@ -45,9 +48,13 @@ import {
   type ShapedToolEntry,
 } from './toolSelect';
 
+export const toolSelectPendingLoadedKey = defineState<Set<string>>(
+  'toolSelect.pendingLoaded',
+  () => new Set(),
+);
+
 export class AgentToolSelectService extends Disposable implements IAgentToolSelectService {
   declare readonly _serviceBrand: undefined;
-  private readonly pendingLoaded = new Set<string>();
 
   constructor(
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
@@ -58,8 +65,10 @@ export class AgentToolSelectService extends Disposable implements IAgentToolSele
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IFlagService private readonly flags: IFlagService,
     @IEventBus eventBus: IEventBus,
+    @IAgentStateService private readonly states: IAgentStateService,
   ) {
     super();
+    this.states.register(toolSelectPendingLoadedKey);
     this._register(
       projector.registerContextFold('toolSelect', (messages) => this.shapeHistory(messages), {
         order: CONTEXT_FOLD_ORDER.VIEW,
@@ -79,12 +88,21 @@ export class AgentToolSelectService extends Disposable implements IAgentToolSele
     this._register(
       eventBus.subscribe('context.spliced', (splice) => {
         if (splice.deleteCount === 0 || this.pendingLoaded.size === 0) return;
-        const landed = collectLoadedDynamicToolNames(this.context.get());
-        for (const name of this.pendingLoaded) {
-          if (!landed.has(name)) this.pendingLoaded.delete(name);
-        }
+        this.dropPendingLoadedNotLanded();
       }),
     );
+  }
+
+  private get pendingLoaded(): Set<string> {
+    return this.states.get(toolSelectPendingLoadedKey);
+  }
+
+  private dropPendingLoadedNotLanded(): void {
+    if (this.pendingLoaded.size === 0) return;
+    const landed = collectLoadedDynamicToolNames(this.context.get());
+    for (const name of this.pendingLoaded) {
+      if (!landed.has(name)) this.pendingLoaded.delete(name);
+    }
   }
 
   enabled(): boolean {
@@ -107,7 +125,7 @@ export class AgentToolSelectService extends Disposable implements IAgentToolSele
         shaped.push(entry);
         continue;
       }
-      if (entry.source !== 'mcp') {
+      if (!this.isDynamicallyLoadable(entry)) {
         shaped.push(entry);
         continue;
       }
@@ -169,8 +187,8 @@ export class AgentToolSelectService extends Disposable implements IAgentToolSele
 
   private shouldIntercept(name: string): boolean {
     if (!this.enabled()) return false;
-    const source = this.toolRegistry.list().find((info) => info.name === name)?.source;
-    if (source !== 'mcp') return false;
+    const info = this.toolRegistry.list().find((entry) => entry.name === name);
+    if (info === undefined || !this.isDynamicallyLoadable(info)) return false;
     if (!this.loadableToolNames().includes(name)) return false;
     return !this.activeLoadedToolNames().has(name);
   }
@@ -185,16 +203,26 @@ export class AgentToolSelectService extends Disposable implements IAgentToolSele
     if (!this.enabled()) return undefined;
     if (this.toolRegistry.resolve(name) !== undefined) return undefined;
     if (!this.loadedToolNames().has(name)) return undefined;
+    if (isMcpToolName(name)) {
+      return (
+        `Tool "${name}" was loaded but its MCP server is currently disconnected. ` +
+        'It may become available again when the server reconnects; do not retry immediately.'
+      );
+    }
     return (
-      `Tool "${name}" was loaded but its MCP server is currently disconnected. ` +
-      'It may become available again when the server reconnects; do not retry immediately.'
+      `Tool "${name}" was loaded but is no longer registered. ` +
+      'Do not retry it unless it becomes available again.'
     );
   }
 
   private loadableToolNames(): string[] {
     return this.toolRegistry
       .list()
-      .filter((info) => info.source === 'mcp' && this.toolPolicy.isToolActive(info.name, info.source))
+      .filter(
+        (info) =>
+          this.isDynamicallyLoadable(info) &&
+          this.toolPolicy.isToolActive(info.name, info.source),
+      )
       .map((info) => info.name)
       .toSorted((a, b) => a.localeCompare(b));
   }
@@ -219,7 +247,19 @@ export class AgentToolSelectService extends Disposable implements IAgentToolSele
   }
 
   private isLoadedToolActive(name: string): boolean {
-    return this.toolPolicy.isToolActive(name, 'mcp');
+    const info = this.toolRegistry.list().find((entry) => entry.name === name);
+    if (info !== undefined) {
+      return (
+        this.isDynamicallyLoadable(info) &&
+        this.toolPolicy.isToolActive(name, info.source)
+      );
+    }
+    if (isMcpToolName(name)) return this.toolPolicy.isToolActive(name, 'mcp');
+    return false;
+  }
+
+  private isDynamicallyLoadable(info: ToolInfo): boolean {
+    return info.source === 'mcp' || info.disclosure === 'deferred';
   }
 
   private shapeActiveHistory(messages: readonly ContextMessage[]): readonly ContextMessage[] {
@@ -307,6 +347,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentToolSelectService,
   AgentToolSelectService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'toolSelect',
 );

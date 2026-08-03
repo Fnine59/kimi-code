@@ -16,6 +16,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
+import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
 interface Envelope<T> {
@@ -88,6 +89,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       await writeFile(join(home as string, 'config.toml'), toml, 'utf-8');
     }
     server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
       homeDir: home,
@@ -147,6 +149,15 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
     ]);
   });
 
+  it('hides the synthesized secondary-model derived entry from /models', async () => {
+    await boot(
+      `${CATALOG_TOML}\n[secondary_model]\nmodel = "turbo"\nmax_output_size = 8192\n`,
+    );
+    const { status, body } = await getJson<{ items: { model: string }[] }>('/api/v1/models');
+    expect(status).toBe(200);
+    expect(body.data.items.map((item) => item.model)).toEqual(['k2', 'turbo', 'gpt4o']);
+  });
+
   it('lists models without refreshing providers', async () => {
     const refreshProviderModels = vi.fn(async () => ({
       changed: [],
@@ -199,7 +210,13 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       has_api_key: true,
       status: 'connected',
       models: ['k2', 'turbo'],
+      // The single GET reveals the stored key; the list above never does.
+      api_key: 'sk-test',
     });
+
+    const noKey = await getJson<Record<string, unknown>>('/api/v1/providers/openai');
+    expect(noKey.body.code).toBe(0);
+    expect(noKey.body.data).not.toHaveProperty('api_key');
   });
 
   it('sets the global default model and reflects it in /auth', async () => {
@@ -305,6 +322,7 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       status: async () => ({ loggedIn: false }),
       refreshOAuthProviderModels,
       getManagedUsage: async () => ({ kind: 'error' as const, message: 'unused' }),
+      getManagedUserInfo: async () => ({ kind: 'error' as const, message: 'unused' }),
       resolveTokenProvider: () => undefined,
       getCachedAccessToken: async () => undefined,
     };

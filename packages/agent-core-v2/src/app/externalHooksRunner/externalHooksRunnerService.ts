@@ -1,5 +1,5 @@
 /**
- * `externalHooksRunner` domain (L6) — `IExternalHooksRunnerService` impl.
+ * `externalHooksRunner` domain — `IExternalHooksRunnerService` impl.
  *
  * Owns the configured-hook lifecycle: builds the event→hooks index from
  * `IConfigService` (`[[hooks]]`) + `IPluginService.enabledHooks()`, reloads it
@@ -12,9 +12,8 @@
  * this service keeps no per-scope state. Bound at App scope.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { Disposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
@@ -126,6 +125,6 @@ registerScopedService(
   LifecycleScope.App,
   IExternalHooksRunnerService,
   ExternalHooksRunnerService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'externalHooksRunner',
 );

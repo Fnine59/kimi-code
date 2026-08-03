@@ -13,7 +13,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { mkdir, open } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   bootstrap,
@@ -165,12 +165,12 @@ export interface GetConfigOptions {
 
 /** Bootstrap the real v2 engine and wrap it in a `CoreHarness`. */
 export function createCoreHarness(options: CoreHarnessOptions = {}): CoreHarness {
-  const identity = options.identity === undefined ? undefined : assertKimiHostIdentity(options.identity);
+  const identity = assertKimiHostIdentity(options.identity);
   const homeDir = resolveKimiHome(options.homeDir);
   const configPath = resolveConfigPath({ homeDir, configPath: options.configPath });
   // TODO(v2-gap): G-3 — v2 bootstrap has no skillDirs input; options.skillDirs is dropped.
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
-  const { app } = bootstrap({ homeDir, configPath }, logSeed(logging));
+  const { app } = bootstrap({ homeDir, configPath, clientIdentity: identity }, logSeed(logging));
   const auth = new KimiAuthFacade({ homeDir, configPath, identity, onRefresh: options.onOAuthRefresh });
   return new CoreHarness({
     app,
@@ -254,7 +254,11 @@ export class CoreHarness {
     // unknown to the registry, so skipping this would make the session
     // impossible to resume later.
     await app.get(IWorkspaceService).createOrTouch(options.workDir);
-    const handle = await app.get(ISessionLifecycleService).create({ sessionId: id, workDir: options.workDir });
+    const handle = await app.get(ISessionLifecycleService).create({
+      sessionId: id,
+      workDir: options.workDir,
+      additionalDirs: options.additionalDirs,
+    });
     try {
       const main = await ensureMainAgent(handle);
       if (options.model !== undefined) {
@@ -268,11 +272,6 @@ export class CoreHarness {
       }
       if (options.metadata !== undefined) {
         await handle.accessor.get(ISessionMetadata).update({ custom: { ...options.metadata } });
-      }
-      // TODO(v2-gap): G-8 — additional dirs only live on the session-scope
-      // workspace context; they are not persisted across resumes.
-      for (const dir of options.additionalDirs ?? []) {
-        handle.accessor.get(ISessionWorkspaceContext).addAdditionalDir(dir);
       }
       const summary = await this.projectLiveSummary(handle);
       const session = this.registerSession(handle, summary, undefined);
@@ -413,7 +412,7 @@ export class CoreHarness {
       lastPrompt: summary.lastPrompt,
       // `cwd` is optional only for sessions persisted before v2 recorded it.
       workDir: summary.cwd ?? '',
-      sessionDir: bootstrapService.sessionDir(summary.workspaceId, summary.id),
+      sessionDir: join(bootstrapService.sessionsDir, summary.workspaceId, summary.id),
       createdAt: summary.createdAt,
       updatedAt: summary.updatedAt,
       archived: summary.archived,
@@ -549,14 +548,11 @@ export class CoreHarness {
     id: string,
     input: { additionalDirs?: readonly string[]; replayTurnLimit?: number },
   ): Promise<CoreSession> {
-    const handle = await this.deps.app.accessor.get(ISessionLifecycleService).resume(id);
+    const handle = await this.deps.app.accessor.get(ISessionLifecycleService).resume(id, {
+      additionalDirs: input.additionalDirs,
+    });
     if (handle === undefined) {
       throw new CoreError(CoreErrorCodes.SESSION_NOT_FOUND, `Session "${id}" was not found.`);
-    }
-    // TODO(v2-gap): G-8 — additional dirs only live on the session-scope
-    // workspace context; they are not persisted across resumes.
-    for (const dir of input.additionalDirs ?? []) {
-      handle.accessor.get(ISessionWorkspaceContext).addAdditionalDir(dir);
     }
     return this.hydrateSession(handle, input.replayTurnLimit);
   }
@@ -637,7 +633,7 @@ export class CoreHarness {
       // clients). Kept as an explicit key so both producers share the same
       // session_started schema.
       client_id: null,
-      client_name: this.deps.identity?.userAgentProduct ?? null,
+      client_name: this.deps.identity?.productName ?? null,
       client_version: this.deps.identity?.version ?? null,
       ui_mode: this.deps.uiMode,
       resumed,

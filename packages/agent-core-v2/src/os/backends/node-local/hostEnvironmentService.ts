@@ -1,5 +1,5 @@
 /**
- * `hostEnvironment` domain (L1) — `IHostEnvironment` implementation.
+ * `hostEnvironment` domain — `IHostEnvironment` implementation.
  *
  * Kicks off the OS / shell probe (`probeHostEnvironmentFromNode`) and the
  * login-shell PATH enrichment (`applyLoginShellPathFromNode`) at construction
@@ -8,8 +8,7 @@
  * returning stale zeros. Bound at App scope.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { BugIndicatingError } from '#/_base/errors/errors';
 import { probeHostEnvironmentFromNode } from '#/_base/execEnv/environmentProbe';
 import { applyLoginShellPathFromNode } from '#/_base/execEnv/loginShellPath';
@@ -79,6 +78,6 @@ registerScopedService(
   LifecycleScope.App,
   IHostEnvironment,
   HostEnvironmentService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'hostEnvironment',
 );

@@ -1,14 +1,12 @@
 /**
- * `telemetry` domain (L1) — `IAgentTelemetryContextService` implementation.
+ * `telemetry` domain — `IAgentTelemetryContextService` implementation.
  *
  * Holds mutable request context (defaulting to `mode: 'agent'`) that turn
- * telemetry snapshots through `ITelemetryService.withContext` at launch.
- * Immutable Agent identity is owned by the scoped telemetry view. Bound at
- * Agent scope; has no cross-domain collaborators.
+ * telemetry snapshots at launch. Bound at Agent scope; has no cross-domain
+ * collaborators.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import {
   IAgentTelemetryContextService,
   type AgentTelemetryContext,
@@ -35,6 +33,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentTelemetryContextService,
   AgentTelemetryContextService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'telemetry',
 );

@@ -1,5 +1,5 @@
 /**
- * `interaction` domain (L6) — `ISessionInteractionService` implementation.
+ * `interaction` domain — `ISessionInteractionService` implementation.
  *
  * Owns the pending interaction set and resolves requests when a response
  * arrives; announces add/remove through a typed `onDidChangePending`. Turn-end
@@ -10,22 +10,24 @@
  * request/resolution is also journaled as a persisted `interaction.request` /
  * `interaction.resolved` Op on the ORIGIN agent's wire (`origin.agentId ??
  * 'main'`), so the journal can rebuild interaction entities on a cold
- * transcript fold. `IAgentLifecycleService` is resolved lazily at dispatch
- * time (via `IInstantiationService.invokeFunction`) because the lifecycle
- * service already depends on this kernel for turn-end cancellation — a
- * constructor edge would close a DI cycle. Direct construction without a
+ * transcript fold. The plain-data state (`pending`, `recentlyResolved`,
+ * `nextId`) is registered into `sessionState` (`ISessionStateService`) and
+ * read/written through it. `IAgentLifecycleService` is resolved lazily at dispatch
+ * time (via `IInstantiationService.invokeFunction`) — a constructor edge
+ * would close a DI cycle. Direct construction without a
  * container (tests, embeddings) simply skips the journaling. The kernel's
  * pending semantics stay memory-only: pending promises are never restored
  * from the journal. Bound at Session scope.
  */
 
 import { Emitter, type Event } from '#/_base/event';
-import { InstantiationType } from '#/_base/di/extensions';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { defineState } from '#/_base/state/stateRegistry';
 
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionStateService } from '#/session/state/sessionState';
 import { IWireService } from '#/wire/wire';
 
 import {
@@ -48,21 +50,48 @@ const RECENTLY_RESOLVED_TTL_MS = 60_000;
 const RECENTLY_RESOLVED_MAX = 256;
 const MAIN_AGENT_ID = 'main';
 
+export const interactionPendingKey = defineState<Map<string, Pending>>(
+  'interaction.pending',
+  () => new Map(),
+);
+export const interactionRecentlyResolvedKey = defineState<Map<string, number>>(
+  'interaction.recentlyResolved',
+  () => new Map(),
+);
+export const interactionNextIdKey = defineState<number>('interaction.nextId', () => 0);
+
 export class SessionInteractionService extends Disposable implements ISessionInteractionService {
   declare readonly _serviceBrand: undefined;
 
-  private readonly pending = new Map<string, Pending>();
-  private readonly recentlyResolved = new Map<string, number>();
   private readonly _onDidChangePending = this._register(new Emitter<InteractionPendingChangedEvent>());
   readonly onDidChangePending: Event<InteractionPendingChangedEvent> = this._onDidChangePending.event;
   private readonly _onDidResolve = this._register(new Emitter<InteractionResolution>());
   readonly onDidResolve: Event<InteractionResolution> = this._onDidResolve.event;
-  private nextId = 0;
 
   constructor(
+    @ISessionStateService private readonly states: ISessionStateService,
     @IInstantiationService private readonly instantiation?: IInstantiationService,
   ) {
     super();
+    this.states.register(interactionPendingKey);
+    this.states.register(interactionRecentlyResolvedKey);
+    this.states.register(interactionNextIdKey);
+  }
+
+  private get pending(): Map<string, Pending> {
+    return this.states.get(interactionPendingKey);
+  }
+
+  private get recentlyResolved(): Map<string, number> {
+    return this.states.get(interactionRecentlyResolvedKey);
+  }
+
+  private get nextId(): number {
+    return this.states.get(interactionNextIdKey);
+  }
+
+  private set nextId(value: number) {
+    this.states.set(interactionNextIdKey, value);
   }
 
   cancelPendingForTurn(turnId: number): void {
@@ -165,8 +194,6 @@ export class SessionInteractionService extends Disposable implements ISessionInt
         (accessor) => accessor.get(IAgentLifecycleService).get(agentId)?.accessor.get(IWireService),
       );
     } catch {
-      // Journaling is best-effort: a partial scope without the agent
-      // lifecycle (test hosts, embeddings) must not break the kernel.
       return undefined;
     }
   }
@@ -199,6 +226,6 @@ registerScopedService(
   LifecycleScope.Session,
   ISessionInteractionService,
   SessionInteractionService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'interaction',
 );

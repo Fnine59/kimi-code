@@ -3,18 +3,15 @@
  *
  * Resolves the `WebSearch` backend from two sources, in precedence order:
  * (1) an explicit `[services.moonshot_search]` config section (read through
- * `config`, mirroring v1 where that section is the single authoritative
- * web-search source) — built with its `apiKey` and/or an `oauth` ref resolved
+ * `config`) — built with its `apiKey` and/or an `oauth` ref resolved
  * through `IOAuthService.resolveTokenProvider(...)`; and (2) the managed Kimi
  * OAuth provider (`managed:kimi-code`) when it carries an `oauth` ref (the
  * state after a successful Kimi login), whose bearer token comes from
  * `IOAuthService.resolveTokenProvider(...)` and whose base URL is derived from
  * the provider's `baseUrl`. The explicit config wins over the managed
- * derivation. Both use the host's Kimi identity headers (`IHostRequestHeaders`,
- * mirroring v1's `kimiRequestHeaders`) as default headers. When neither source
- * is configured it yields `undefined` so the self-registering `WebSearch` tool
- * stays hidden. Owns no tool registration — the `WebSearch` tool self-registers
- * via `registerTool(...)` and reads this service from the Agent-scope accessor.
+ * derivation. Both use the host's Kimi identity headers
+ * (`IBootstrapService.args.requestHeaders`) as default headers. When neither
+ * source is configured it yields `undefined`.
  * Tests and hosts that need a custom backend bind `IWebSearchProviderService`
  * directly. Bound at App scope.
  */
@@ -24,17 +21,16 @@ import {
   kimiCodeBaseUrl,
 } from '@moonshot-ai/kimi-code-oauth';
 
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IOAuthService } from '#/app/auth/auth';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
-import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
 import { IProviderService } from '#/kosong/provider/provider';
 import { isOAuthCatalogVendor } from '#/kosong/provider/providerDefinition';
 
 import { SERVICES_SECTION, type ServicesConfig } from '../configSection';
 import { MoonshotWebSearchProvider } from './providers/moonshot-web-search';
-import type { WebSearchProvider } from './tools/web-search';
+import type { WebSearchProvider } from '#/agent/tools/web-search/web-search';
 import { IWebSearchProviderService } from './webSearch';
 
 export class WebSearchProviderService implements IWebSearchProviderService {
@@ -43,7 +39,7 @@ export class WebSearchProviderService implements IWebSearchProviderService {
   constructor(
     @IProviderService private readonly providers: IProviderService,
     @IOAuthService private readonly oauth: IOAuthService,
-    @IHostRequestHeaders private readonly hostHeaders: IHostRequestHeaders,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IConfigService private readonly config: IConfigService,
   ) {}
 
@@ -64,7 +60,7 @@ export class WebSearchProviderService implements IWebSearchProviderService {
       baseUrl: search.baseUrl,
       tokenProvider,
       apiKey: nonEmptyString(search.apiKey),
-      defaultHeaders: { ...this.hostHeaders.headers },
+      defaultHeaders: { ...this.bootstrap.args.requestHeaders },
       customHeaders: search.customHeaders,
     });
   }
@@ -85,7 +81,7 @@ export class WebSearchProviderService implements IWebSearchProviderService {
     return new MoonshotWebSearchProvider({
       baseUrl,
       tokenProvider,
-      defaultHeaders: { ...this.hostHeaders.headers },
+      defaultHeaders: { ...this.bootstrap.args.requestHeaders },
       customHeaders: provider.customHeaders,
     });
   }
@@ -100,6 +96,6 @@ registerScopedService(
   LifecycleScope.App,
   IWebSearchProviderService,
   WebSearchProviderService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'auth',
 );

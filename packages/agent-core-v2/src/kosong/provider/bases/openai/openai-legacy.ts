@@ -1,5 +1,5 @@
 /**
- * `kosong/provider` domain (L2) — OpenAI Chat Completions wire base.
+ * `kosong/provider` domain — OpenAI Chat Completions wire base.
  *
  * The base that actually speaks the Chat Completions wire format — and the
  * vendor host with the widest hook surface. It knows NOTHING about vendors:
@@ -26,7 +26,7 @@
 
 import OpenAI from 'openai';
 
-import { parseTraceId } from '#/kosong/contract/errors';
+import { parseTraceId, type ChatProviderError } from '#/kosong/contract/errors';
 import type {
   ContentPart,
   Message,
@@ -72,6 +72,7 @@ import {
   type ToolMessageConversion,
   toolToOpenAI,
 } from './openai-common';
+import { ReasoningKeyDialect } from './reasoning-key';
 import {
   mergeRequestHeaders,
   requireProviderApiKey,
@@ -79,8 +80,6 @@ import {
 } from '../request-auth';
 import { normalizeToolCallIdsForProvider, sanitizeToolCallId } from '../tool-call-id';
 
-const KNOWN_REASONING_KEYS = ['reasoning_content', 'reasoning_details', 'reasoning'] as const;
-const DEFAULT_OUTBOUND_REASONING_KEY = KNOWN_REASONING_KEYS[0];
 
 const CHAT_COMPLETIONS_MAX_OUTPUT_TOKENS_CEILING = 128 * 1024;
 
@@ -89,15 +88,9 @@ export const OPENAI_CHAT_TOOL_CALL_ID_POLICY: ToolCallIdPolicy = {
   maxLength: 64,
 };
 
-/**
- * The base-internal hook set: same surface as the L1 trait's per-request
- * hooks but with the `TraitContext` already bound away by the compositor.
- * Construction-time declarations (endpoint/headers/provides/capability) never
- * enter this set. A hook returning `undefined` always means "keep the base
- * default".
- */
 export interface OpenAIChatCompletionsHooks {
   convertTool?: (tool: Tool) => Record<string, unknown> | undefined;
+  convertError?: (error: unknown) => ChatProviderError | undefined;
   convertMessage?: (
     message: Message,
     converted: Record<string, unknown>,
@@ -166,20 +159,6 @@ interface OpenAIToolCallOut {
   function: { name: string; arguments: string | null };
 }
 
-function extractReasoningContent(
-  source: unknown,
-  explicitKey: string | undefined,
-): string | undefined {
-  if (typeof source !== 'object' || source === null) return undefined;
-  const record = source as Record<string, unknown>;
-  const keys: readonly string[] = explicitKey !== undefined ? [explicitKey] : KNOWN_REASONING_KEYS;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'string') return value;
-  }
-  return undefined;
-}
-
 function usesMaxCompletionTokens(model: string): boolean {
   const normalized = model.toLowerCase();
   return /^o\d(?:$|[-.])/.test(normalized) || /^gpt-5(?:$|[-.])/.test(normalized);
@@ -225,7 +204,7 @@ function responseFormatToOpenAI(format: ResponseFormat): Record<string, unknown>
 
 function convertMessage(
   message: Message,
-  reasoningKey: string | undefined,
+  reasoningKey: string,
   toolMessageConversion: ToolMessageConversion,
   preserveThinking: boolean,
   allowToolResultExtraction: boolean,
@@ -247,8 +226,6 @@ function convertMessage(
 
   if (message.role === 'tool') {
     const hasNonTextPart = message.content.some((p) => p.type !== 'text' && p.type !== 'think');
-    // The forced extract_text fallback for media-bearing tool results is part
-    // of the base's non-trait behavior; in trait mode the trait owns shaping.
     const effectiveConversion: ToolMessageConversion =
       allowToolResultExtraction && hasNonTextPart ? 'extract_text' : toolMessageConversion;
 
@@ -292,7 +269,7 @@ function convertMessage(
   }
 
   if (hasReasoningPart || (preserveThinking && message.role === 'assistant')) {
-    result[reasoningKey ?? DEFAULT_OUTBOUND_REASONING_KEY] = reasoningContent;
+    result[reasoningKey] = reasoningContent;
   }
 
   return result;
@@ -348,7 +325,7 @@ function appendToolResultMediaMessage(
 
 function convertHistoryMessages(
   history: readonly Message[],
-  reasoningKey: string | undefined,
+  reasoningKey: string,
   toolMessageConversion: ToolMessageConversion,
   preserveThinking: boolean,
 ): OpenAIMessage[] {
@@ -380,21 +357,24 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
   constructor(
     response: OpenAI.Chat.ChatCompletion | AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
     isStream: boolean,
-    reasoningKey: string | undefined,
+    reasoningKeyDialect: ReasoningKeyDialect,
     private readonly _traceId: string | null,
     private readonly _extractUsageHook?:
       | ((chunk: Record<string, unknown>) => Record<string, unknown> | null | undefined)
+      | undefined,
+    private readonly _convertErrorHook?:
+      | ((error: unknown) => ChatProviderError | undefined)
       | undefined,
   ) {
     if (isStream) {
       this._iter = this._convertStreamResponse(
         response as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
-        reasoningKey,
+        reasoningKeyDialect,
       );
     } else {
       this._iter = this._convertNonStreamResponse(
         response as OpenAI.Chat.ChatCompletion,
-        reasoningKey,
+        reasoningKeyDialect,
       );
     }
   }
@@ -430,8 +410,6 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
   }
 
   private _captureUsage(raw: Record<string, unknown>, fallback: unknown): void {
-    // The hook locates the usage payload first; `undefined` defers to the
-    // base default location, `null` asserts the chunk carries no usage.
     const hooked = this._extractUsageHook?.(raw);
     const rawUsage = hooked !== undefined ? hooked : fallback;
     if (rawUsage !== null && rawUsage !== undefined) {
@@ -441,7 +419,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
 
   private async *_convertNonStreamResponse(
     response: OpenAI.Chat.ChatCompletion,
-    reasoningKey: string | undefined,
+    reasoningKeyDialect: ReasoningKeyDialect,
   ): AsyncGenerator<StreamedMessagePart> {
     this._id = response.id;
     this._captureUsage(response as unknown as Record<string, unknown>, response.usage);
@@ -450,7 +428,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
     const message = response.choices[0]?.message;
     if (!message) return;
 
-    const reasoning = extractReasoningContent(message, reasoningKey);
+    const reasoning = reasoningKeyDialect.observe(message);
     if (reasoning !== undefined) {
       yield { type: 'think', think: reasoning } satisfies StreamedMessagePart;
     }
@@ -474,7 +452,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
 
   private async *_convertStreamResponse(
     response: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
-    reasoningKey: string | undefined,
+    reasoningKeyDialect: ReasoningKeyDialect,
   ): AsyncGenerator<StreamedMessagePart> {
     const bufferedToolCalls = new Map<number | string, BufferedChatCompletionToolCall>();
 
@@ -499,7 +477,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
 
         const delta = choice.delta;
 
-        const reasoning = extractReasoningContent(delta, reasoningKey);
+        const reasoning = reasoningKeyDialect.observe(delta);
         if (reasoning !== undefined) {
           yield { type: 'think', think: reasoning } satisfies StreamedMessagePart;
         }
@@ -515,7 +493,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
         }
       }
     } catch (error: unknown) {
-      throw convertOpenAIError(error);
+      throw convertOpenAIError(error, this._convertErrorHook);
     }
   }
 }
@@ -528,7 +506,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
   private readonly _apiKey: string | undefined;
   private readonly _baseUrl: string | undefined;
   private readonly _defaultHeaders: Record<string, string> | undefined;
-  private readonly _reasoningKey: string | undefined;
+  private readonly _reasoningKeyDialect: ReasoningKeyDialect;
   private readonly _offEffort: string | undefined;
   private readonly _thinkingEffort: ThinkingEffort | undefined;
   private readonly _generationKwargs: OpenAILegacyGenerationKwargs;
@@ -538,11 +516,6 @@ export class OpenAILegacyChatProvider implements ChatProvider {
   private readonly _clientFactory: ((auth: ProviderRequestAuth) => OpenAI) | undefined;
   private readonly _hooks: OpenAIChatCompletionsHooks | undefined;
 
-  /**
-   * Bound only when the composed hook set declares `uploadVideo` — declaring
-   * the hook IS the capability declaration, so a base without the hook has no
-   * upload facility at all.
-   */
   readonly uploadVideo?: (
     input: string | VideoUploadInput,
     options?: GenerateOptions,
@@ -557,10 +530,11 @@ export class OpenAILegacyChatProvider implements ChatProvider {
     this._stream = options.stream ?? true;
     this._hooks = options.hooks;
     const normalizedReasoningKey = options.reasoningKey?.trim();
-    this._reasoningKey =
+    this._reasoningKeyDialect = new ReasoningKeyDialect(
       normalizedReasoningKey !== undefined && normalizedReasoningKey.length > 0
         ? normalizedReasoningKey
-        : this._hooks?.reasoningKey?.();
+        : this._hooks?.reasoningKey?.(),
+    );
     this._thinkingEffort = options.thinkingEffort;
     this._offEffort = options.offEffort;
     this._generationKwargs = normalizeGenerationKwargs(
@@ -599,10 +573,8 @@ export class OpenAILegacyChatProvider implements ChatProvider {
   ): Promise<StreamedMessage> {
     const { kwargs, reasoningEffort } = this._resolveRequestKwargs(history, options);
 
-    // preserveThinking decides whether assistant messages force-replay their
-    // reasoning field; the hook reads the already-seeded kwargs (e.g. the
-    // thinking config a withThinking hook just encoded).
     const preserveThinking = this._hooks?.preserveThinking?.(kwargs) ?? false;
+    const reasoningKey = this._reasoningKeyDialect.outboundKey();
 
     const messages: Record<string, unknown>[] = [];
     if (systemPrompt) {
@@ -614,10 +586,8 @@ export class OpenAILegacyChatProvider implements ChatProvider {
 
     const convertMessageHook = this._hooks?.convertMessage;
     if (convertMessageHook !== undefined) {
-      // Trait mode: the tool-declaration-only skip and the tool-result media
-      // extraction are handed over to the trait wholesale.
       for (const msg of normalizedHistory) {
-        const converted = convertMessage(msg, this._reasoningKey, null, preserveThinking, false);
+        const converted = convertMessage(msg, reasoningKey, null, preserveThinking, false);
         const shaped = convertMessageHook(msg, converted);
         if (shaped !== null) {
           messages.push(shaped);
@@ -627,7 +597,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       messages.push(
         ...convertHistoryMessages(
           normalizedHistory,
-          this._reasoningKey,
+          reasoningKey,
           this._toolMessageConversion,
           preserveThinking,
         ),
@@ -660,15 +630,12 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       createParams['reasoning_effort'] = reasoningEffort;
     }
 
-    // buildParams is the last hook to run before the request is sent.
     const builtParams = this._hooks?.buildParams?.(createParams);
     const finalParams = builtParams ?? createParams;
 
     try {
       const client = this._createClient(options?.auth);
       options?.onRequestSent?.();
-      // `withResponse()` resolves as soon as the response headers arrive
-      // (before the stream body), so the trace id is available mid-stream.
       const { data, response } = await client.chat.completions
         .create(
           finalParams as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
@@ -680,20 +647,16 @@ export class OpenAILegacyChatProvider implements ChatProvider {
           | OpenAI.Chat.ChatCompletion
           | AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
         this._stream,
-        this._reasoningKey,
+        this._reasoningKeyDialect,
         parseTraceId(response.headers),
         this._hooks?.extractUsage,
+        this._hooks?.convertError,
       );
     } catch (error: unknown) {
-      throw convertOpenAIError(error);
+      throw convertOpenAIError(error, this._hooks?.convertError);
     }
   }
 
-  /**
-   * Per-turn intent → request kwargs, in the fixed contract overlay order:
-   * cacheKey → sampling → thinking → maxCompletionTokens. Each intent consults
-   * its hook first and falls back to the base encoding on `undefined`.
-   */
   private _resolveRequestKwargs(
     history: readonly Message[],
     options: GenerateOptions | undefined,
@@ -732,8 +695,6 @@ export class OpenAILegacyChatProvider implements ChatProvider {
           ? undefined
           : explicitThinkingEffort;
 
-    // issue #1616 history scan — disabled entirely when a withThinking hook
-    // exists: once a trait takes over thinking, the base must not interfere.
     if (
       reasoningEffort === undefined &&
       explicitThinkingEffort !== 'off' &&
@@ -750,7 +711,6 @@ export class OpenAILegacyChatProvider implements ChatProvider {
 
     if (options?.maxCompletionTokens !== undefined) {
       let cap = options.maxCompletionTokens;
-      // Window clamp first — it cannot be skipped by any hook.
       if (
         options.usedContextTokens !== undefined &&
         options.maxContextTokens !== undefined &&
@@ -763,7 +723,6 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       if (hooked !== undefined) {
         kwargs = { ...kwargs, ...hooked };
       } else {
-        // The ceiling clamp can be taken over by the hook.
         const capped = Math.min(cap, CHAT_COMPLETIONS_MAX_OUTPUT_TOKENS_CEILING);
         kwargs = { ...kwargs, ...completionTokenKwargs(this._model, Math.max(1, capped)) };
       }
@@ -804,10 +763,6 @@ export class OpenAILegacyChatProvider implements ChatProvider {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Base capability catalog — the final fallback of capability resolution.
-// `undefined` means the base knows nothing about the model.
-// ---------------------------------------------------------------------------
 
 export function getOpenAILegacyModelCapability(modelName: string) {
   const normalized = modelName.toLowerCase();

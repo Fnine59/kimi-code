@@ -1,12 +1,11 @@
 /**
- * `question` domain (L7) — `ISessionQuestionService` implementation.
+ * `question` domain — `ISessionQuestionService` implementation.
  *
  * Typed facade over the `interaction` kernel for ask-user requests; owns no
  * pending state of its own (the kernel holds it). Bound at Session scope.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 
 import {
@@ -76,4 +75,4 @@ function requestId(req: QuestionRequest): string {
   return req.id ?? req.toolCallId ?? `question:${String(Date.now())}`;
 }
 
-registerScopedService(LifecycleScope.Session, ISessionQuestionService, SessionQuestionService, InstantiationType.Eager, 'question');
+registerScopedService(LifecycleScope.Session, ISessionQuestionService, SessionQuestionService, ScopeActivation.OnScopeCreated, 'question');

@@ -1,5 +1,5 @@
 /**
- * `contextSize` domain (L4) — wire Model (`ContextSizeModel`) and the
+ * `contextSize` domain — wire Model (`ContextSizeModel`) and the
  * `context_size.measured` (`contextSizeMeasured`) Op for the last measured
  * context token count.
  *
@@ -34,8 +34,7 @@
  * on a no-op so the wire's reference-equality gate stays quiet — and carries
  * no non-determinism (the last measured record wins). The sparse
  * `measuredPrefixTokens` array and the per-message live `estimates` are
- * intentionally NOT in the Model. Consumed by the Agent-scope
- * `contextSizeService`.
+ * intentionally NOT in the Model.
  */
 
 import { z } from 'zod';

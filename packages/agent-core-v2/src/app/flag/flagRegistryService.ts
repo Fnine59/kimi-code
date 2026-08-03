@@ -1,14 +1,13 @@
 /**
- * `flag` domain (L3) — `IFlagRegistry` implementation.
+ * `flag` domain — `IFlagRegistry` implementation.
  *
  * In-memory catalog of flag definitions. Seeds itself from the import-time
  * contributions (`getContributedFlags`) on construction, and also accepts
  * runtime `register` calls (used by tests). Bound at App scope.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
 import {
   type FlagDefinitionInput,
@@ -57,6 +56,6 @@ registerScopedService(
   LifecycleScope.App,
   IFlagRegistry,
   FlagRegistryService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'flag',
 );

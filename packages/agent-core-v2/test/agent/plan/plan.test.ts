@@ -2,8 +2,14 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 
+// Imported first on purpose: OnScopeCreated services activate in registry
+// (module evaluation) order, and `onBeforeExecuteTool` veto listeners fire in
+// construction order. The plan guard must register before the permission gate
+// (reached via `#/index` in the harness) so plan-file writes are allowed before
+// deny rules adjudicate.
+import '#/agent/plan/planService';
 import type { ToolCall } from '#/kosong/contract/message';
-import { dirname, isAbsolute, join } from 'pathe';
+import { dirname, join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -175,9 +181,7 @@ describe('Plan service', () => {
     it('enters plan mode without starting a model turn and prepares the plan directory', async () => {
       const mkdir = vi.fn().mockResolvedValue(undefined);
       const writeText = vi.fn().mockResolvedValue(0);
-      const cwd = await makeTempDir('kimi-plan-entry-');
       useFakes(createPlanFakes({ mkdir, writeText }));
-      profile.update({ cwd });
 
       await ctx.rpc.enterPlan({});
       await delay(10);
@@ -192,11 +196,9 @@ describe('Plan service', () => {
     });
 
     it('derives the plan path from the agent homedir on enter and restore', async () => {
-      const cwd = await makeTempDir('kimi-plan-path-');
       useFakes(createPlanFakes({
         writeText: vi.fn(async (_path: string, _content: string): Promise<void> => {}),
       }));
-      profile.update({ cwd });
       await plan.enter('stable-plan');
 
       const livePath = await expectActivePlanPath();
@@ -219,25 +221,10 @@ describe('Plan service', () => {
       expect(await expectActivePlanPath()).toBe(livePath);
     });
 
-    it('keeps the plan path under the agent homedir when the profile cwd is empty', async () => {
-      useFakes(createPlanFakes({
-        writeText: vi.fn(async (_path: string, _content: string): Promise<void> => {}),
-      }));
-      profile.update({ cwd: '' });
-
-      await plan.enter('homedir-plan');
-
-      const planPath = await expectActivePlanPath();
-      expect(isAbsolute(planPath)).toBe(true);
-      expect(planPath).toBe(expectedPlanPath('homedir-plan'));
-    });
-
     it('enters plan mode through the EnterPlanMode tool and reminds the next step', async () => {
-      const cwd = await makeTempDir('kimi-plan-tool-entry-');
       const { fakes } = createPlanFileFakes();
       useFakes(fakes);
       useTools(['EnterPlanMode']);
-      profile.update({ cwd });
       await ctx.rpc.setPermission({ mode: 'yolo' });
 
       const enterPlanModeCall: ToolCall = {
@@ -260,10 +247,8 @@ describe('Plan service', () => {
 
   describe('plan clear', () => {
     it('empties the current plan file without leaving plan mode', async () => {
-      const cwd = await makeTempDir('kimi-plan-clear-');
       const { files, writeText, fakes } = createPlanFileFakes();
       useFakes(fakes);
-      profile.update({ cwd });
       await plan.enter('test-plan', false);
 
       const planPath = await expectActivePlanPath();
@@ -307,10 +292,8 @@ describe('Plan service', () => {
     });
 
     it('snapshots the current plan file into a versioned blob with a reference record', async () => {
-      const cwd = await makeTempDir('kimi-plan-revision-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
-      profile.update({ cwd });
       await plan.enter('rev-plan', false);
 
       const planPath = await expectActivePlanPath();
@@ -333,10 +316,8 @@ describe('Plan service', () => {
     });
 
     it('increments the version on every recording and keeps earlier blobs', async () => {
-      const cwd = await makeTempDir('kimi-plan-revision-twice-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
-      profile.update({ cwd });
       await plan.enter('rev-plan', false);
 
       const planPath = await expectActivePlanPath();
@@ -351,10 +332,8 @@ describe('Plan service', () => {
     });
 
     it('mints the next version from the replayed counter', async () => {
-      const cwd = await makeTempDir('kimi-plan-revision-restore-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
-      profile.update({ cwd });
       await plan.enter('rev-plan', false);
 
       const planPath = await expectActivePlanPath();
@@ -379,11 +358,9 @@ describe('Plan service', () => {
     });
 
     it('records a revision when ExitPlanMode submits the plan', async () => {
-      const cwd = await makeTempDir('kimi-plan-submit-revision-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
       useTools(['ExitPlanMode']);
-      profile.update({ cwd });
       await ctx.rpc.setPermission({ mode: 'auto' });
       await plan.enter('submit-plan', false);
 
@@ -408,11 +385,9 @@ describe('Plan service', () => {
     });
 
     it('records the next version when a revised plan is resubmitted', async () => {
-      const cwd = await makeTempDir('kimi-plan-revise-revision-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
       useTools(['ExitPlanMode']);
-      profile.update({ cwd });
       await ctx.rpc.setPermission({ mode: 'manual' });
       await plan.enter('revise-plan', false);
 
@@ -452,10 +427,8 @@ describe('Plan service', () => {
     });
 
     it('does not record a revision on clear or on plan file writes', async () => {
-      const cwd = await makeTempDir('kimi-plan-no-revision-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
-      profile.update({ cwd });
       await plan.enter('quiet-plan', false);
 
       const planPath = await expectActivePlanPath();
@@ -470,11 +443,9 @@ describe('Plan service', () => {
 
   describe('plan exit tool', () => {
     it('reads the current plan file and exits plan mode directly in auto mode', async () => {
-      const cwd = await makeTempDir('kimi-plan-exit-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
       useTools(['ExitPlanMode']);
-      profile.update({ cwd });
       await ctx.rpc.setPermission({ mode: 'auto' });
       await plan.enter('test-plan', false);
 
@@ -502,11 +473,9 @@ describe('Plan service', () => {
     });
 
     it('stops the turn and stays in plan mode when the user rejects the plan', async () => {
-      const cwd = await makeTempDir('kimi-plan-reject-exit-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
       useTools(['ExitPlanMode']);
-      profile.update({ cwd });
       await ctx.rpc.setPermission({ mode: 'manual' });
       await plan.enter('reject-plan', false);
 
@@ -536,7 +505,6 @@ describe('Plan service', () => {
       const exec = vi.fn(() => {
         throw new Error('Bash should not execute after plan rejection');
       });
-      const cwd = await makeTempDir('kimi-plan-reject-skip-tool-');
       const { files, fakes: baseFakes } = createPlanFileFakes(undefined);
       const fakes: PlanFakes = {
         fs: baseFakes.fs,
@@ -544,7 +512,6 @@ describe('Plan service', () => {
       };
       useFakes(fakes);
       useTools(['ExitPlanMode', 'Bash']);
-      profile.update({ cwd });
       await ctx.rpc.setPermission({ mode: 'yolo' });
       await plan.enter('reject-and-exit-plan', false);
 
@@ -584,11 +551,9 @@ describe('Plan service', () => {
     });
 
     it('refuses to exit when the current plan file is empty', async () => {
-      const cwd = await makeTempDir('kimi-plan-empty-exit-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
       useTools(['ExitPlanMode']);
-      profile.update({ cwd });
       await ctx.rpc.setPermission({ mode: 'yolo' });
       await plan.enter('empty-plan', false);
 
@@ -616,11 +581,9 @@ describe('Plan service', () => {
 
   describe('plan exit tool options', () => {
     it('keeps options for approval when an option omits the optional description', async () => {
-      const cwd = await makeTempDir('kimi-plan-options-exit-');
       const { files, fakes } = createPlanFileFakes();
       useFakes(fakes);
       useTools(['ExitPlanMode']);
-      profile.update({ cwd });
       await ctx.rpc.setPermission({ mode: 'manual' });
       await plan.enter('options-plan', false);
 
@@ -667,9 +630,7 @@ describe('Plan service', () => {
           files.set(path, content);
         });
         useFakes(createPlanFakes({ readText, writeText }));
-        const cwd = await makeTempDir('kimi-plan-write-tool-');
         useTools([toolName]);
-        profile.update({ cwd });
         await plan.enter('test-plan', false);
 
         const planPath = await expectActivePlanPath();
@@ -708,9 +669,7 @@ describe('Plan service', () => {
         files.set(path, content);
       });
       useFakes(createPlanFakes({ writeText }));
-      const cwd = await makeTempDir('kimi-plan-deny-write-');
       useTools(['Write']);
-      profile.update({ cwd });
       permissionRules.addRules([
         {
           decision: 'deny',
@@ -811,6 +770,7 @@ describe('Plan service', () => {
         [emit] agent.activity.updated      { "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 2, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
         [wire] context.append_loop_event   { "event": { "type": "content.part", "uuid": "<uuid-5>", "turnId": "0", "step": 2, "stepUuid": "<uuid-4>", "part": { "type": "text", "text": "The safe command printed plan-safe." } }, "time": "<time>" }
         [wire] context.append_loop_event   { "event": { "type": "step.end", "uuid": "<uuid-4>", "turnId": "0", "step": 2, "finishReason": "end_turn", "usage": { "inputOther": 574, "output": 13, "inputCacheRead": 0, "inputCacheCreation": 0 }, "messageId": "mock-2", "providerFinishReason": "completed", "rawFinishReason": "stop" }, "time": "<time>" }
+        [wire] turn.ended                  { "turnId": 0, "reason": "completed", "time": "<time>" }
         [emit] turn.ended                  { "turnId": 0, "reason": "completed" }
       `);
 
@@ -888,6 +848,7 @@ describe('Plan service', () => {
         [emit] agent.activity.updated      { "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 2, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
         [wire] context.append_loop_event   { "event": { "type": "content.part", "uuid": "<uuid-5>", "turnId": "0", "step": 2, "stepUuid": "<uuid-4>", "part": { "type": "text", "text": "The command completed." } }, "time": "<time>" }
         [wire] context.append_loop_event   { "event": { "type": "step.end", "uuid": "<uuid-4>", "turnId": "0", "step": 2, "finishReason": "end_turn", "usage": { "inputOther": 571, "output": 10, "inputCacheRead": 0, "inputCacheCreation": 0 }, "messageId": "mock-2", "providerFinishReason": "completed", "rawFinishReason": "stop" }, "time": "<time>" }
+        [wire] turn.ended                  { "turnId": 0, "reason": "completed", "time": "<time>" }
         [emit] turn.ended                  { "turnId": 0, "reason": "completed" }
       `);
       expect(toolResultText(context.get())).toContain('removed');
@@ -945,11 +906,11 @@ describe('Plan service', () => {
     it('keeps the preserved injection index aligned after undo removes earlier messages', async () => {
       await plan.enter('test-plan', false);
 
-      ctx.appendUserMessage([{ type: 'text', text: 'draft the plan' }]);
+      ctx.appendUserTurn('draft the plan');
       await injectDynamic();
       ctx.appendAssistantTurn(1, 'Plan drafted.');
 
-      ctx.undoHistory(1);
+      await ctx.undoHistory(1);
       ctx.appendUserMessage([{ type: 'text', text: 'new plan request' }]);
       await injectDynamic();
 

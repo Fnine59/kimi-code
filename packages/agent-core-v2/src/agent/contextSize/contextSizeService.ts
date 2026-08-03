@@ -1,5 +1,5 @@
 /**
- * `contextSize` domain (L4) — `IAgentContextSizeService` implementation.
+ * `contextSize` domain — `IAgentContextSizeService` implementation.
  *
  * Owns the measured context token counts in the wire `ContextSizeModel`:
  * reads it through `wire.getModel`, writes it through
@@ -24,8 +24,7 @@
  */
 
 import { Disposable } from '#/_base/di/lifecycle';
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -87,10 +86,6 @@ export class AgentContextSizeService extends Disposable implements IAgentContext
   get(start?: number, end?: number): ContextSize {
     const context = this.context.get();
     const model = this.wire.getModel(ContextSizeModel);
-    // Defensive clamp: the measured prefix can never be longer than the live
-    // context. An op written against a mutated message array once inflated
-    // `model.length` past `context.length`, silently knocking every read off
-    // the measured path onto the per-message estimate branch.
     const measuredLength = Math.min(model.length, context.length);
     const from = normalizeSliceIndex(start ?? 0, context.length);
     const to = normalizeSliceIndex(end ?? context.length, context.length);
@@ -147,12 +142,6 @@ export class AgentContextSizeService extends Disposable implements IAgentContext
   measured(input: readonly Message[], output: readonly Message[], usage: TokenUsage): void {
     const context = this.context.get();
     if (!matchesContext(input, context)) return;
-    // The fold of the step's loop events creates the assistant message in the
-    // context BEFORE the exchange finishes (a skeleton at `step.begin`, filled
-    // by `content.part` folds during streaming), and `input` is that same live
-    // array — so it already includes `output` here. The measured prefix is the
-    // whole current context; `input.length + output.length` would count the
-    // folded output twice.
     const length = context.length;
     const tokens = tokenUsageTotal(usage);
     this.wire.dispatch(contextSizeMeasured({ length, tokens }));
@@ -226,6 +215,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentContextSizeService,
   AgentContextSizeService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'contextSize',
 );

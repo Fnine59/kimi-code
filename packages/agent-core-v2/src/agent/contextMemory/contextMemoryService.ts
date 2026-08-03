@@ -1,5 +1,5 @@
 /**
- * `contextMemory` domain (L4) — `IAgentContextMemoryService` implementation.
+ * `contextMemory` domain — `IAgentContextMemoryService` implementation.
  *
  * Owns the per-agent conversation history in the wire `ContextModel`
  * (`ContextMessage[]`): reads through `wire.getModel`, writes through the
@@ -24,8 +24,7 @@
  */
 
 import { Disposable } from '#/_base/di/lifecycle';
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentContextProjectorService } from '#/agent/contextProjector/contextProjector';
 import { ContextSizeModel, contextSizeMeasured } from '#/agent/contextSize/contextSizeOps';
@@ -170,6 +169,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentContextMemoryService,
   AgentContextMemoryService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'contextMemory',
 );

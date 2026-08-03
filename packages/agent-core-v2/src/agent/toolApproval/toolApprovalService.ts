@@ -1,18 +1,17 @@
 /**
- * `toolApproval` domain (L3) — `IAgentToolApprovalService` implementation.
+ * `toolApproval` domain — `IAgentToolApprovalService` implementation.
  *
- * Owns the approval round-trip extracted from `permissionGate`: publishes
+ * Owns the approval round-trip: publishes
  * `permission.approval.requested/resolved` through `eventBus`, awaits the
- * `session/approval` broker (absent broker = auto-approve), records
+ * session approval broker (absent broker = auto-approve), records
  * session-scope approval rules through `permissionRules`, reports
  * `permission_approval_result` through `telemetry`, and folds ask
  * continuations back into authorize results. Bound at Agent scope.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable, isUserCancellation } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type {
@@ -260,6 +259,6 @@ registerScopedService(
   LifecycleScope.Agent,
   IAgentToolApprovalService,
   AgentToolApprovalService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'toolApproval',
 );

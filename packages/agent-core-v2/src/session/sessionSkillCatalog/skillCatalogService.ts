@@ -1,34 +1,38 @@
 /**
- * `sessionSkillCatalog` domain (L3) — `ISessionSkillCatalog` sink implementation.
+ * `sessionSkillCatalog` domain — `ISessionSkillCatalog` sink
+ * implementation.
  *
- * Dumb ordered-merge table: pulls the seven eager `ISkillSource`s (builtin /
- * user / explicit / extra / workspace / plugin / CLI `--skills-dir`) and folds
- * their contributions into an in-memory catalog by priority, so higher-priority
- * sources win name collisions; load diagnostics (`skipped`, `scannedRoots`)
- * carried by file-backed sources are folded into the catalog as well. `ready`
- * resolves once all seven have completed their first `load()`+merge; a source's
- * `onDidChange` (e.g. plugin reload) re-pulls just that source and re-merges,
- * firing `onDidChange`. `set`/`remove` (`ISkillCatalogSink`) let ad-hoc sources
- * push contributions. Bound at Session scope; the same instance is the
- * `ISessionSkillCatalog` read view.
+ * The Session-scope business view over the workspace's merged skill catalog:
+ * the data arrives through the seeded `ISessionSkillCatalogData` read view —
+ * this service never scans the filesystem itself. It re-folds the data
+ * snapshot on every seeded change
+ * event (forwarding the source id) and merges session-local ad-hoc
+ * contributions (`ISkillCatalogSink`) on top by priority. `reload()` no
+ * longer re-scans: it re-folds the current seed and re-fires `catalog`.
+ * The plain-data state (`contributions`, `merged`) is registered into
+ * `sessionState` (`ISessionStateService`) and read/written through it.
+ * Bound at Session scope.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { Disposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
-import { IBuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { defineState } from '#/_base/state/stateRegistry';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
-import type { ISkillSource, SkillContribution } from '#/app/skillCatalog/skillSource';
+import type { SkillContribution } from '#/app/skillCatalog/skillSource';
 import type { SkillCatalog } from '#/app/skillCatalog/types';
-import { IUserFileSkillSource } from '#/app/skillCatalog/userFileSkillSource';
+import { ISessionStateService } from '#/session/state/sessionState';
 
-import { IExplicitSkillSource } from './explicitSkillSource';
-import { IPluginSkillSource } from './pluginSkillSource';
-import { IExtraFileSkillSource } from './extraFileSkillSource';
-import { IExplicitFileSkillSource } from './explicitFileSkillSource';
 import { ISessionSkillCatalog, type ISkillCatalogSink } from './skillCatalog';
-import { IWorkspaceFileSkillSource } from './workspaceFileSkillSource';
+import { ISessionSkillCatalogData } from './skillCatalogData';
+
+export const skillCatalogContributionsKey = defineState<
+  Map<string, { readonly c: SkillContribution; readonly priority: number }>
+>('sessionSkillCatalog.contributions', () => new Map());
+export const skillCatalogMergedKey = defineState<InMemorySkillCatalog>(
+  'sessionSkillCatalog.merged',
+  () => new InMemorySkillCatalog(),
+);
 
 export class SessionSkillCatalogService
   extends Disposable
@@ -36,39 +40,40 @@ export class SessionSkillCatalogService
 {
   declare readonly _serviceBrand: undefined;
 
-  private readonly sources: readonly ISkillSource[];
-  private readonly contributions = new Map<
-    string,
-    { readonly c: SkillContribution; readonly priority: number }
-  >();
-  private readonly sourceLoadTails = new Map<ISkillSource, Promise<void>>();
-  private merged = new InMemorySkillCatalog();
   readonly ready: Promise<void>;
   private readonly onDidChangeEmitter = this._register(new Emitter<string>());
   readonly onDidChange: Event<string> = this.onDidChangeEmitter.event;
 
   constructor(
-    @IBuiltinSkillSource builtin: IBuiltinSkillSource,
-    @IUserFileSkillSource user: IUserFileSkillSource,
-    @IExplicitFileSkillSource explicitFile: IExplicitFileSkillSource,
-    @IExtraFileSkillSource extra: IExtraFileSkillSource,
-    @IWorkspaceFileSkillSource workspace: IWorkspaceFileSkillSource,
-    @IPluginSkillSource plugin: IPluginSkillSource,
-    @IExplicitSkillSource explicitSkill: IExplicitSkillSource,
+    @ISessionSkillCatalogData private readonly data: ISessionSkillCatalogData,
+    @ISessionStateService private readonly states: ISessionStateService,
   ) {
     super();
-    this.sources = [builtin, user, explicitFile, extra, workspace, plugin, explicitSkill].toSorted(
-      (a, b) => a.priority - b.priority,
+    this.states.register(skillCatalogContributionsKey);
+    this.states.register(skillCatalogMergedKey);
+    this._register(
+      this.data.onDidChange((sourceId) => {
+        this.remerge();
+        this.onDidChangeEmitter.fire(sourceId);
+      }),
     );
-    for (const s of this.sources) {
-      if (s.onDidChange)
-        this._register(
-          s.onDidChange(() => {
-            void this.reloadSource(s.id);
-          }),
-        );
-    }
-    this.ready = this.loadAll();
+    this.remerge();
+    this.ready = this.data.ready.then(() => this.remerge());
+  }
+
+  private get contributions(): Map<
+    string,
+    { readonly c: SkillContribution; readonly priority: number }
+  > {
+    return this.states.get(skillCatalogContributionsKey);
+  }
+
+  private get merged(): InMemorySkillCatalog {
+    return this.states.get(skillCatalogMergedKey);
+  }
+
+  private set merged(value: InMemorySkillCatalog) {
+    this.states.set(skillCatalogMergedKey, value);
   }
 
   get catalog(): SkillCatalog {
@@ -80,7 +85,8 @@ export class SessionSkillCatalogService
   }
 
   async reload(): Promise<void> {
-    await this.loadAll();
+    await this.ready;
+    this.remerge();
     this.onDidChangeEmitter.fire('catalog');
   }
 
@@ -96,41 +102,12 @@ export class SessionSkillCatalogService
     this.onDidChangeEmitter.fire(id);
   }
 
-  private async loadAll(): Promise<void> {
-    for (const s of this.sources) {
-      await this.loadSource(s);
-    }
-    this.remerge();
-  }
-
-  private async reloadSource(id: string): Promise<void> {
-    const s = this.sources.find((x) => x.id === id);
-    if (!s) return;
-    await this.loadSource(s, true);
-  }
-
-  private loadSource(source: ISkillSource, fireChange = false): Promise<void> {
-    const previous = this.sourceLoadTails.get(source) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(async () => {
-      const contribution = await source.load();
-      this.contributions.set(source.id, { c: contribution, priority: source.priority });
-      if (fireChange) {
-        this.remerge();
-        this.onDidChangeEmitter.fire(source.id);
-      }
-    });
-    this.sourceLoadTails.set(source, current);
-    const clear = () => {
-      if (this.sourceLoadTails.get(source) === current) {
-        this.sourceLoadTails.delete(source);
-      }
-    };
-    void current.then(clear, clear);
-    return current;
-  }
-
   private remerge(): void {
     const m = new InMemorySkillCatalog();
+    const base = this.data.catalog;
+    for (const skill of base.listSkills()) m.register(skill, { replace: true });
+    m.addRoots(base.getSkillRoots());
+    m.recordSkipped(base.getSkippedByPolicy());
     const ordered = [...this.contributions.values()].toSorted((a, b) => a.priority - b.priority);
     for (const { c } of ordered) {
       for (const skill of c.skills) m.register(skill, { replace: true });
@@ -145,6 +122,6 @@ registerScopedService(
   LifecycleScope.Session,
   ISessionSkillCatalog,
   SessionSkillCatalogService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'sessionSkillCatalog',
 );

@@ -1,5 +1,5 @@
 /**
- * `hostFsWatch` domain (L1) — `IHostFsWatchService` implementation.
+ * `hostFsWatch` domain — `IHostFsWatchService` implementation.
  *
  * Wraps `chokidar` to report raw create/modify/delete events under an absolute
  * path. Each `watch()` call owns an independent `FSWatcher`; disposing the
@@ -9,8 +9,7 @@
 import { FSWatcher } from 'chokidar';
 
 import { Emitter, type Event } from '#/_base/event';
-import { InstantiationType } from '#/_base/di/extensions';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 
 import {
@@ -96,6 +95,6 @@ registerScopedService(
   LifecycleScope.App,
   IHostFsWatchService,
   HostFsWatchService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'hostFsWatch',
 );

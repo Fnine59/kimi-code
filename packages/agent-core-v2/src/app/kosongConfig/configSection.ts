@@ -1,28 +1,32 @@
 /**
- * `kosongConfig` domain (L3) — config-section declarations for kosong.
+ * `kosongConfig` domain — config-section declarations for kosong.
  *
  * The persistence wrapper for kosong's provider/model registries and the
- * thinking / model-catalog preferences: declares every kosong-owned section
- * constant and its zod schema, plus the env bindings / write-path strips
- * and the snake_case ↔ camelCase TOML transforms. Where kosong owns a pure
- * type (`providers` / `models` / `thinking`), the schema is re-derived from
- * it and pinned by an `AssertExact` assertion (schema ≡ type at compile
- * time); `modelCatalog` has no kosong-side type and keeps its own local
- * schema. Self-registered at module load via `registerConfigSection`, so
- * the `config` domain never imports kosong types.
+ * thinking / model-catalog / secondary-model preferences: declares every
+ * kosong-owned section constant and its zod schema, plus the env bindings /
+ * write-path strips and the snake_case ↔ camelCase TOML transforms. Where
+ * kosong owns a pure type (`providers` / `models` / `thinking`), the schema
+ * is re-derived from it and pinned by an `AssertExact` assertion (schema ≡
+ * type at compile time); `modelCatalog` and `secondaryModel` have no
+ * kosong-side type — theirs derive from the local schemas. Self-registered
+ * at module load via `registerConfigSection`.
  *
  * `ProviderTypeSchema` is deliberately free-form text: vendor identity is
  * NOT enumerated at parse time. Validation happens at resolve time against
  * kosong's provider-definition registry, which is what allows external
  * packages to register new vendors without touching this schema.
  *
- * Side-effect module: production gets it from the `src/index.ts`
- * side-effect block; tests import it on demand.
+ * Side-effect module: production imports it for the registration side
+ * effects; tests import it on demand.
  */
 
 import { z } from 'zod';
 
-import { type ConfigStripEnv, envBindings } from '#/app/config/config';
+import {
+  type ConfigStripEnv,
+  envBindings,
+  stripEnvBoundFields,
+} from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 import {
   camelToSnake,
@@ -39,9 +43,6 @@ import type { ThinkingConfig } from '#/kosong/model/thinking';
 import type { OAuthRef, ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 
-// ---------------------------------------------------------------------------
-// `providers` — kosong's provider registry (types: `kosong/provider/provider`)
-// ---------------------------------------------------------------------------
 
 export const PROVIDERS_SECTION = 'providers';
 
@@ -77,8 +78,6 @@ export const ProviderConfigSchema = z.object({
 
 export const ProvidersSectionSchema = z.record(z.string(), ProviderConfigSchema);
 
-// Compile-time pins: the schemas must stay in lockstep with kosong's
-// hand-written types (drift in either direction fails typecheck).
 type _AssertOAuthRef = AssertExact<Equal<z.infer<typeof OAuthRefSchema>, OAuthRef>>;
 type _AssertProviderConfig = AssertExact<
   Equal<z.infer<typeof ProviderConfigSchema>, ProviderConfig>
@@ -87,8 +86,6 @@ type _AssertProvidersSection = AssertExact<
   Equal<z.infer<typeof ProvidersSectionSchema>, ProvidersSection>
 >;
 
-// The `KIMI_MODEL_PROVIDER_TYPE` / `KIMI_MODEL_API_KEY` / `KIMI_MODEL_BASE_URL`
-// environment bindings synthesize the reserved `__kimi_env__` provider entry.
 export const providersEnvBindings = envBindings(ProvidersSectionSchema, {
   [ENV_MODEL_PROVIDER_KEY]: envBindings(ProviderConfigSchema, {
     apiKey: 'KIMI_MODEL_API_KEY',
@@ -164,19 +161,9 @@ registerConfigSection(PROVIDERS_SECTION, ProvidersSectionSchema, {
   toToml: providersToToml,
 });
 
-// ---------------------------------------------------------------------------
-// `models` — kosong's model registry (types: `kosong/model/model`)
-// ---------------------------------------------------------------------------
 
 export const MODELS_SECTION = 'models';
 
-/**
- * The global default-model pointer: a single model id from `[models.*]` used
- * whenever a call site does not name a model explicitly. Cross-domain by
- * nature — written by `IModelCatalog.setDefaultModel` and the OAuth login /
- * refresh flows (`app/auth`), read by runtime resolution fallbacks. The sole
- * owner of the key constant lives here; every consumer imports it.
- */
 export const DEFAULT_MODEL_SECTION = 'defaultModel';
 
 const ModelBaseSchema = z.object({
@@ -225,8 +212,6 @@ export const ModelRecordSchema = ModelBaseSchema.extend({
 
 export const ModelsSectionSchema = z.record(z.string(), ModelRecordSchema);
 
-// Compile-time pins: the schemas must stay in lockstep with kosong's
-// hand-written types (drift in either direction fails typecheck).
 type _AssertModelOverride = AssertExact<
   Equal<z.infer<typeof ModelOverrideSchema>, ModelOverride>
 >;
@@ -235,8 +220,6 @@ type _AssertModelsSection = AssertExact<
   Equal<z.infer<typeof ModelsSectionSchema>, ModelsSection>
 >;
 
-// The transforms preserve user-defined model ids (record keys) while
-// converting each id's fields.
 export const modelsFromToml = (rawSnake: unknown): unknown => {
   if (!isPlainObject(rawSnake)) return rawSnake;
   const out: Record<string, unknown> = {};
@@ -263,18 +246,17 @@ export const modelsToToml = (value: unknown, rawSnake: unknown): unknown => {
       out[id] = entry;
       continue;
     }
-    const rawEntry = cloneRecord(rawSub[id]);
-    const converted: Record<string, unknown> = {};
+    const merged = cloneRecord(rawSub[id]);
     for (const [key, field] of Object.entries(entry)) {
       if (key === 'capabilities' && Array.isArray(field)) {
-        converted[camelToSnake(key)] = [...field];
+        merged[camelToSnake(key)] = [...field];
       } else if (key === 'overrides' && isPlainObject(field)) {
-        converted['overrides'] = modelOverridesToToml(field, rawEntry['overrides']);
+        merged['overrides'] = modelOverridesToToml(field, merged['overrides']);
       } else {
-        setDefined(converted, camelToSnake(key), field);
+        setDefined(merged, camelToSnake(key), field);
       }
     }
-    out[id] = { ...rawEntry, ...converted };
+    out[id] = merged;
   }
   return out;
 };
@@ -300,9 +282,6 @@ registerConfigSection(MODELS_SECTION, ModelsSectionSchema, {
   toToml: modelsToToml,
 });
 
-// ---------------------------------------------------------------------------
-// `thinking` — thinking defaults (type: `kosong/model/thinking`)
-// ---------------------------------------------------------------------------
 
 export const THINKING_SECTION = 'thinking';
 
@@ -313,15 +292,10 @@ export const ThinkingConfigSchema = z.object({
   keep: z.string().optional(),
 });
 
-// Compile-time pin: the schema must stay in lockstep with kosong's
-// hand-written `ThinkingConfig` type (drift in either direction fails
-// typecheck).
 type _AssertThinkingConfig = AssertExact<
   Equal<z.infer<typeof ThinkingConfigSchema>, ThinkingConfig>
 >;
 
-// The `KIMI_MODEL_THINKING_EFFORT` env binding is an env-only forcedEffort
-// override; the strip keeps it out of `config.toml`.
 export const thinkingEnvBindings = envBindings(ThinkingConfigSchema, {
   forcedEffort: 'KIMI_MODEL_THINKING_EFFORT',
 });
@@ -337,15 +311,33 @@ registerConfigSection(THINKING_SECTION, ThinkingConfigSchema, {
   stripEnv: stripThinkingEnv,
 });
 
-// ---------------------------------------------------------------------------
-// `modelCatalog` — provider-model catalog auto-refresh cadence (no kosong type)
-// ---------------------------------------------------------------------------
+export const SECONDARY_MODEL_SECTION = 'secondaryModel';
 
-// Read by the kap-server model-catalog refresh scheduler to decide the
-// refresh interval and whether to refresh once on start. Env vars
-// (`KIMI_CODE_MODEL_CATALOG_REFRESH_INTERVAL_MS`,
-// `KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START`) override these values at the
-// scheduler edge.
+export const SECONDARY_MODEL_ENV = 'KIMI_SECONDARY_MODEL';
+export const SECONDARY_MODEL_EFFORT_ENV = 'KIMI_SECONDARY_EFFORT';
+
+export const SecondaryModelConfigSchema = ModelOverrideSchema.extend({
+  model: z.string().min(1).optional(),
+});
+
+export type SecondaryModelConfig = z.infer<typeof SecondaryModelConfigSchema>;
+
+function parseNonEmptyEnv(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+export const secondaryModelEnvBindings = envBindings(SecondaryModelConfigSchema, {
+  model: { env: SECONDARY_MODEL_ENV, parse: parseNonEmptyEnv },
+  defaultEffort: { env: SECONDARY_MODEL_EFFORT_ENV, parse: parseNonEmptyEnv },
+});
+
+registerConfigSection(SECONDARY_MODEL_SECTION, SecondaryModelConfigSchema, {
+  env: secondaryModelEnvBindings,
+  stripEnv: stripEnvBoundFields(secondaryModelEnvBindings),
+});
+
+
 export const MODEL_CATALOG_SECTION = 'modelCatalog';
 
 export const ModelCatalogConfigSchema = z.object({

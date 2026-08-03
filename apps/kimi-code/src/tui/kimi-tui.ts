@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { DeviceAuthorization } from '@moonshot-ai/kimi-code-oauth';
+import { log } from '@moonshot-ai/kimi-code-sdk';
 import type { MigrationPlan } from '@moonshot-ai/migration-legacy';
 import {
   deleteAllKittyImages,
@@ -230,6 +231,7 @@ function createInitialAppState(input: KimiTUIStartupInput): AppState {
     disablePasteBurst: input.tuiConfig.disablePasteBurst,
     notifications: input.tuiConfig.notifications,
     upgrade: input.tuiConfig.upgrade,
+    statusLine: input.tuiConfig.statusLine,
     availableModels: {},
     availableProviders: {},
     sessionTitle: null,
@@ -329,6 +331,7 @@ export class KimiTUI {
   private uninstallRainbowDance: () => void;
   private signalCleanupHandlers: Array<() => void> = [];
   private isShuttingDown = false;
+  private backgroundRefreshPromise: Promise<void> | undefined;
   private readonly migrationPlan: MigrationPlan | null;
   private readonly migrateOnly: boolean;
   private startupNotice: string | undefined;
@@ -744,7 +747,7 @@ export class KimiTUI {
   private async init(): Promise<boolean> {
     setExperimentalFeatures(await this.harness.getExperimentalFeatures());
     await this.authFlow.refreshAvailableModels();
-    void this.refreshProviderModelsInBackground();
+    this.backgroundRefreshPromise = this.refreshProviderModelsInBackground();
 
     const { startup } = this.options;
     const { workDir } = this.state.appState;
@@ -853,6 +856,16 @@ export class KimiTUI {
     this.isShuttingDown = true;
     this.unregisterSignalHandlers();
     this.aborted = true;
+    // Give the startup provider-model refresh a brief chance to finish before
+    // the harness closes (and the process exits): its config writes are each
+    // atomic, so draining can only ever leave a complete file behind. Bounded
+    // so a slow network never delays the exit.
+    if (this.backgroundRefreshPromise !== undefined) {
+      await Promise.race([
+        this.backgroundRefreshPromise,
+        new Promise((resolve) => setTimeout(resolve, 1500)),
+      ]);
+    }
     this.streamingUI.discardPending();
     // Stop background polling, streaming intervals, and per-component timers
     // before tearing the UI down, so they can't keep firing requestRender after
@@ -1445,6 +1458,22 @@ export class KimiTUI {
     this.beginSessionRequest();
 
     const parts: readonly PromptPart[] = options?.parts ?? [{ type: 'text', text: input }];
+    // While a goal is being pursued the engine holds its active turn across the
+    // whole continuation loop, so a fresh prompt races the goal driver at every
+    // continuation boundary and is rejected with `turn.agent_busy`, dropping
+    // the message. Steer instead: the engine buffers it into the running goal
+    // turn, or launches a turn of its own if the loop just ended.
+    if (this.state.appState.goal?.status === 'active') {
+      void session.steer(parts).catch((error: unknown) => {
+        const message = formatErrorMessage(error);
+        // Same reset as the prompt path: beginSessionRequest already moved the
+        // TUI to the waiting phase, and no turn events may follow a failed
+        // steer (e.g. the session is gone), which would leave the UI stuck
+        // queueing input behind a request that never completes.
+        this.failSessionRequest(`Failed to steer: ${message}`);
+      });
+      return;
+    }
     void session.prompt(parts, { agentId: options?.agentId }).catch((error: unknown) => {
       const message = formatErrorMessage(error);
       this.failSessionRequest(`Failed to send: ${message}`);
@@ -1833,8 +1862,11 @@ export class KimiTUI {
         this.state.appState.sessionId,
         this.hasSessionContent(),
       );
-    } catch {
-      /* silently ignore */
+    } catch (error) {
+      // The picker must keep working (it renders the empty state), but a
+      // swallowed failure surfaces as a misleading "No sessions found." —
+      // keep a log trail so the real error stays discoverable.
+      log.warn('failed to fetch sessions for picker', { error: String(error) });
     } finally {
       this.state.loadingSessions = false;
     }
@@ -2232,11 +2264,10 @@ export class KimiTUI {
     this.state.todoPanelContainer.clear();
     this.imageStore.clear();
     this.renderWelcome();
-    // Session resets (/new, /clear, session switch) want a pristine screen.
-    // Force a destructive full render: the renderer's collapse repaint
-    // intentionally preserves scrollback, which would leave the previous
-    // session's text above the welcome banner.
-    this.state.ui.requestRender(true);
+    // No forced full render on session reset: let the differential renderer
+    // converge on its own (a mass change above the viewport still makes the
+    // engine repaint everything, but nothing is forced destructively here).
+    this.state.ui.requestRender();
   }
 
   private isTurnBoundaryComponent(child: Component): boolean {
@@ -2730,12 +2761,10 @@ export class KimiTUI {
       if (!isExpandable(child)) continue;
       child.setExpanded(this.state.toolOutputExpanded && i >= expandCutoff);
     }
-    // Expanding/collapsing shifts content above the viewport; the clamped
-    // differential render would paint a second copy below the stale one in
-    // scrollback. This is a deliberate user action (like /clear), so do a
-    // destructive full render: scrollback holds exactly one copy and the
-    // expanded output can be read by scrolling up.
-    this.state.ui.requestRender(true);
+    // Differential render only — no destructive full redraw on expand/collapse.
+    // (When the expanded region reaches above the viewport, the engine's own
+    // fallback may still do a full render; that path is not forced from here.)
+    this.state.ui.requestRender();
   }
 
   toggleTodoPanelExpansion(): void {
@@ -2983,18 +3012,10 @@ export class KimiTUI {
 
   restoreEditor(): void {
     this.teardownEditorReplacement();
-    // Measure overflow against the restored tree (editor mounted), not the tall
-    // panel just removed — otherwise a short session with a tall panel looks like
-    // it overflows and we take a full clear/home that yanks the editor to the top.
-    // Treat an exact one-screen fill as overflowing too: a full redraw is safe
-    // there (no blank tail) and clears a stale viewport offset after a shrink.
-    const { columns, rows } = this.state.terminal;
-    const overflowsViewport = this.state.ui.render(columns).length >= rows;
-    // Force a full re-render after replacing a tall panel with the shorter editor:
-    // differential rendering leaves the editor shifted up when the bottom-anchored
-    // region shrinks in place. Skip under tmux (its own reflow handles the shrink)
-    // and when content fits on one screen (a full clear would pull the editor up).
-    this.state.ui.requestRender(!this.state.terminalState.insideTmux && overflowsViewport);
+    // Differential render only: closing a tall panel leaves the editor a few
+    // rows above the bottom (blank tail) until the next append, but avoids a
+    // destructive full redraw on every dialog close.
+    this.state.ui.requestRender();
   }
 
   restoreInputText(text: string): void {

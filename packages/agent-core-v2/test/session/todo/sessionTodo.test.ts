@@ -1,3 +1,10 @@
+/**
+ * Scenario: session-shared Todo state, including undo restoration.
+ * Responsibility: SessionTodoService exposes the main wire state and emits observable changes.
+ * Wiring: lightweight lifecycle/agent fakes with real event-bus behavior.
+ * Run: pnpm --filter @moonshot-ai/agent-core-v2 test -- test/session/todo/sessionTodo.test.ts
+ */
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ServiceIdentifier, ServicesAccessor } from '#/_base/di/instantiation';
@@ -9,6 +16,8 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IEventBus } from '#/app/event/eventBus';
+import { EventBusService } from '#/app/event/eventBusService';
 import { createHooks } from '#/hooks';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { makeLifecycleStub } from '../agentLifecycle/stubs';
@@ -48,6 +57,7 @@ interface FakeAgent {
   readonly registeredVariants: string[];
   readonly reminderProviders: Map<string, () => string | undefined>;
   readonly appended: RecordedTodoSet[];
+  readonly eventBus: EventBusService;
   readonly restore: (records: readonly WireRecord[]) => Promise<void>;
 }
 
@@ -57,6 +67,7 @@ function makeFakeAgent(agentId: string, options: FakeAgentOptions = {}): FakeAge
   const registeredVariants: string[] = [];
   const reminderProviders = new Map<string, () => string | undefined>();
   const appended: RecordedTodoSet[] = [];
+  const eventBus = new EventBusService();
 
   let todoState: readonly TodoItem[] = [];
 
@@ -121,7 +132,8 @@ function makeFakeAgent(agentId: string, options: FakeAgentOptions = {}): FakeAge
     },
     restore: async () => {},
     flush: async () => {},
-    getModel: () => todoState,
+    getModel: () => ({ current: todoState, checkpoints: [] }),
+    subscribe: () => toDisposable(() => {}),
   } as unknown as IWireService;
 
   const accessor: ServicesAccessor = {
@@ -131,6 +143,7 @@ function makeFakeAgent(agentId: string, options: FakeAgentOptions = {}): FakeAge
       if (id === IInstantiationService) return instantiationStub as unknown as T;
       if (id === IAgentContextMemoryService) return memoryStub as unknown as T;
       if (id === IAgentToolPolicyService) return toolPolicyStub as unknown as T;
+      if (id === IEventBus) return eventBus as unknown as T;
       if (id === IWireService) return wireStub as unknown as T;
       throw new Error(`unexpected service request in fake agent: ${String(id)}`);
     },
@@ -149,6 +162,7 @@ function makeFakeAgent(agentId: string, options: FakeAgentOptions = {}): FakeAge
     registeredVariants,
     reminderProviders,
     appended,
+    eventBus,
     restore,
   };
 }
@@ -192,6 +206,24 @@ describe('SessionTodoService', () => {
       [{ title: 'x', status: 'pending' }],
       [{ title: 'y', status: 'done' }],
     ]);
+  });
+
+  it('fires the restored list once when undo changes the main wire state', async () => {
+    const main = makeFakeAgent('main');
+    const lifecycle = makeLifecycleStub([main.handle]);
+    const service = new SessionTodoService(lifecycle.service, makeFlagsStub());
+    service.setTodos([{ title: 'doomed', status: 'in_progress' }]);
+
+    const seen: Array<readonly TodoItem[]> = [];
+    const subscription = service.onDidChange((todos) => seen.push(todos));
+    await main.restore([
+      { type: 'tools.update_store', key: 'todo', value: [{ title: 'kept', status: 'pending' }] },
+    ]);
+    main.eventBus.publish({ type: 'context.undone', turns: 1 });
+    main.eventBus.publish({ type: 'context.undone', turns: 1 });
+    subscription.dispose();
+
+    expect(seen).toEqual([[{ title: 'kept', status: 'pending' }]]);
   });
 
   it('appends a tools.update_store record to the main agent wire on setTodos', () => {
