@@ -206,8 +206,8 @@ describe('executeSpawnBranches', () => {
     runCompletionControllers[1]!.resolve({ summary: 'memory B' });
     const results = await promise;
     expect(results).toEqual<readonly SpawnBranchResult[]>([
-      { summary: 'branch A', outcome: 'completed', memoryBody: 'memory A' },
-      { summary: 'branch B', outcome: 'completed', memoryBody: 'memory B' },
+      { summary: 'branch A', outcome: 'completed', memoryBody: 'memory A', executionRef: 'agent-0' },
+      { summary: 'branch B', outcome: 'completed', memoryBody: 'memory B', executionRef: 'agent-1' },
     ]);
   });
 
@@ -219,7 +219,8 @@ describe('executeSpawnBranches', () => {
     const results = await promise;
     expect(results[0]?.outcome).toBe('errored');
     expect(results[0]?.diagnostic).toContain('boom');
-    expect(results[1]).toEqual({ summary: 'branch B', outcome: 'completed', memoryBody: 'memory B' });
+    expect(results[0]?.executionRef).toBe('agent-0');
+    expect(results[1]).toEqual({ summary: 'branch B', outcome: 'completed', memoryBody: 'memory B', executionRef: 'agent-1' });
   });
 
   it('isolates a single aborted branch and keeps the rest', async () => {
@@ -232,7 +233,7 @@ describe('executeSpawnBranches', () => {
     const results = await promise;
     expect(results[0]?.outcome).toBe('aborted');
     expect(results[0]?.diagnostic).toContain('user cancelled');
-    expect(results[1]).toEqual({ summary: 'branch B', outcome: 'completed', memoryBody: 'memory B' });
+    expect(results[1]).toEqual({ summary: 'branch B', outcome: 'completed', memoryBody: 'memory B', executionRef: 'agent-1' });
   });
 
   it('treats an empty summary as errored', async () => {
@@ -244,7 +245,7 @@ describe('executeSpawnBranches', () => {
     expect(results[0]?.outcome).toBe('errored');
     expect(results[0]?.diagnostic).toBe('child completed without a non-empty final memory');
     expect(results[0]?.memoryBody).toBe('child completed without a non-empty final memory');
-    expect(results[1]).toEqual({ summary: 'branch B', outcome: 'completed', memoryBody: 'memory B' });
+    expect(results[1]).toEqual({ summary: 'branch B', outcome: 'completed', memoryBody: 'memory B', executionRef: 'agent-1' });
   });
 
   it('aborts unfinished branches when the turn signal is aborted and releases all agents', async () => {

@@ -90,7 +90,6 @@ import { IWireService } from '#/wire/wire';
 
 import {
   resolveSpawnMaxThreads,
-  SPINE_SPAWN_MAX_THREADS_ENV,
   SPINE_SPAWN_SECTION,
   type SpineSpawnConfig,
 } from './configSection';
@@ -347,16 +346,17 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
       );
     }
 
-    // Aggregate capacity admission is all-or-nothing: an overlapping fission
-    // that cannot fit is rejected before any branch starts. Mixing spawn with
-    // other spine calls in one response is rejected earlier, at the executor's
+    // Aggregate capacity admission is all-or-nothing, reported upstream-style
+    // (`capacity_rejection_receipts`): an overlapping fission that cannot fit
+    // starts no branches, but the call still succeeds with a full receipt —
+    // every task is recorded errored so the rejected batch lands in the tree
+    // and the model can retry with fewer tasks. Mixing spawn with other spine
+    // calls in one response is rejected earlier, at the executor's
     // before-execute veto (`guardSpawnMixing`).
     if (this.activeSpawnBranches + tasks.length > maxBranches) {
       return {
-        accepted: false,
-        reason:
-          `aggregate admission requested ${String(tasks.length)} child agents, but shared capacity was unavailable under the configured limit of ${String(maxBranches)} concurrent child agents. ` +
-          `Admission is all-or-nothing. Retry spine_spawn with fewer tasks after capacity is available, or increase [spine_spawn] max_concurrent_threads_per_session (env override: ${SPINE_SPAWN_MAX_THREADS_ENV}).`,
+        accepted: true,
+        receipt: buildSpawnReceipt(capacityRejectionResults(tasks, maxBranches)),
       };
     }
 
@@ -766,6 +766,7 @@ interface SpawnReceiptResultJson {
   readonly outcome: 'completed' | 'errored' | 'aborted';
   readonly memory_body: string;
   readonly diagnostic?: string;
+  readonly execution_ref?: string;
 }
 
 function buildSpawnReceipt(branches: readonly SpawnBranchResult[]): string {
@@ -774,9 +775,31 @@ function buildSpawnReceipt(branches: readonly SpawnBranchResult[]): string {
     outcome: branch.outcome,
     memory_body: branch.memoryBody,
     diagnostic: branch.diagnostic,
+    execution_ref: branch.executionRef,
   }));
   const receipt: SpawnReceiptJson = { schema: 'spine.spawn.result.v1', results };
   return JSON.stringify(receipt);
+}
+
+/**
+ * Upstream `capacity_rejection_receipts` shape: when aggregate admission
+ * cannot fit, no branch starts but every task still gets an errored result,
+ * so the receipt is well-formed and the rejected batch is recorded in the
+ * tree. `execution_ref` is absent — no child agent exists to reference.
+ */
+function capacityRejectionResults(
+  tasks: readonly SpineSpawnTaskInput[],
+  maxBranches: number,
+): SpawnBranchResult[] {
+  const total = tasks.length;
+  return tasks.map((task, ordinal) => {
+    const diagnostic =
+      `spine_spawn task ${String(ordinal + 1)}/${String(total)} (\`${task.summary.trim()}\`) was not started: ` +
+      `aggregate admission requested ${String(total)} child agents, but shared capacity was unavailable under the configured limit of ${String(maxBranches)} concurrent child agents (existing agents also consume this capacity). ` +
+      'Admission is all-or-nothing, so no child agents from this batch were created. ' +
+      'Retry spine_spawn with fewer tasks after capacity is available, or increase spine_spawn.max_concurrent_threads_per_session.';
+    return { summary: task.summary, outcome: 'errored', memoryBody: diagnostic, diagnostic };
+  });
 }
 
 registerScopedService(

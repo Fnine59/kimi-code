@@ -89,8 +89,9 @@ export interface IAgentSpineService {
    * Executes a `spine_spawn` fission: forks one child agent per task, runs them
    * in parallel, and returns a structured JSON receipt. The receipt landing in
    * history IS the join; derive synthesizes the closed child nodes from it.
-   * Rejected results surface capacity/validation reasons as errors so the model
-   * can retry.
+   * Capacity-shortfall admission is reported inside the receipt as per-task
+   * errored results (no branches start); validation rejections surface their
+   * reasons as errors so the model can retry.
    */
   executeSpawn(
     tasks: readonly SpineSpawnTaskInput[],

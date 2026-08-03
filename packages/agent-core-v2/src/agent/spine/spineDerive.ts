@@ -421,6 +421,13 @@ function validateSpawnReceipt(
     if (diagnostic !== undefined && (typeof diagnostic !== 'string' || diagnostic.length === 0)) {
       return undefined;
     }
+    const executionRef = itemRecord['execution_ref'];
+    if (
+      executionRef !== undefined &&
+      (typeof executionRef !== 'string' || executionRef.length === 0)
+    ) {
+      return undefined;
+    }
     if (outcome !== 'completed' && diagnostic === undefined) return undefined;
     const task = tasks[ordinal];
     if (task === undefined || task.summary.trim().length === 0) return undefined;

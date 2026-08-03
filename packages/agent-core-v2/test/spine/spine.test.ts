@@ -1361,7 +1361,7 @@ describe('spine_spawn service', () => {
     }
   });
 
-  it('rejects all-or-nothing when capacity is unavailable', async () => {
+  it('reports capacity-unavailable admission as an all-errored receipt', async () => {
     const completions: ReturnType<typeof buildCompletionController>[] = [];
     const hangingSubagent: ISessionSubagentService = {
       _serviceBrand: undefined,
@@ -1406,7 +1406,9 @@ describe('spine_spawn service', () => {
     );
     await Promise.resolve();
 
-    // A second overlapping batch of two cannot fit under the limit of 2.
+    // A second overlapping batch of two cannot fit under the limit of 2: no
+    // branch starts, but the call still succeeds with a full receipt whose
+    // per-task errored results carry the upstream diagnostic.
     const second = await spine.executeSpawn(
       [
         { summary: 'branch C', prompt: 'do C' },
@@ -1414,12 +1416,47 @@ describe('spine_spawn service', () => {
       ],
       new AbortController().signal,
     );
-    expect(second.accepted).toBe(false);
-    if (!second.accepted) {
-      expect(second.reason).toContain('aggregate admission requested 2 child agents');
-      expect(second.reason).toContain('all-or-nothing');
-      expect(second.reason).toContain('KIMI_CODE_SPINE_SPAWN_MAX_THREADS');
+    expect(second.accepted).toBe(true);
+    const receipt = JSON.parse(second.receipt!);
+    expect(receipt.schema).toBe('spine.spawn.result.v1');
+    expect(receipt.results).toHaveLength(2);
+    for (const ordinal of [0, 1]) {
+      const result = receipt.results[ordinal];
+      expect(result.outcome).toBe('errored');
+      expect(result.diagnostic).toContain(`spine_spawn task ${String(ordinal + 1)}/2`);
+      expect(result.diagnostic).toContain('was not started');
+      expect(result.diagnostic).toContain('aggregate admission requested 2 child agents');
+      expect(result.diagnostic).toContain(
+        'Admission is all-or-nothing, so no child agents from this batch were created',
+      );
+      expect(result.diagnostic).toContain('spine_spawn.max_concurrent_threads_per_session');
+      expect(result.memory_body).toBe(result.diagnostic);
+      expect(result.execution_ref).toBeUndefined();
     }
+
+    // The receipt is derivable: the rejected batch lands in the tree as
+    // errored branch nodes, so the model can see the rejection and retry.
+    ctx.get(IAgentContextMemoryService).append(
+      assistantSpineCall('call_spawn_cap', 'spine_spawn', {
+        tasks: [
+          { summary: 'branch C', prompt: 'do C' },
+          { summary: 'branch D', prompt: 'do D' },
+        ],
+      }),
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: second.receipt! }],
+        toolCallId: 'call_spawn_cap',
+        isError: false,
+      } as ContextMessage,
+    );
+    const state = readSpine(ctx);
+    expect(state.nodes['1.1.1']?.summary).toBe('branch C');
+    expect(state.nodes['1.1.1']?.spawn?.outcome).toBe('errored');
+    expect(state.nodes['1.1.1']?.closedAt).toBeDefined();
+    expect(state.nodes['1.1.2']?.summary).toBe('branch D');
+    expect(state.nodes['1.1.2']?.spawn?.outcome).toBe('errored');
+    expect(state.nodes['1.1.2']?.closedAt).toBeDefined();
 
     // Unblock the first batch and drain it.
     completions.forEach((c) => c.resolve({ summary: 'done' }));
@@ -1450,8 +1487,8 @@ describe('spine_spawn service', () => {
     const receipt = JSON.parse(result.receipt!);
     expect(receipt.schema).toBe('spine.spawn.result.v1');
     expect(receipt.results).toHaveLength(2);
-    expect(receipt.results[0]).toMatchObject({ ordinal: 0, outcome: 'completed', memory_body: 'memory A' });
-    expect(receipt.results[1]).toMatchObject({ ordinal: 1, outcome: 'completed', memory_body: 'memory B' });
+    expect(receipt.results[0]).toMatchObject({ ordinal: 0, outcome: 'completed', memory_body: 'memory A', execution_ref: 'agent-0' });
+    expect(receipt.results[1]).toMatchObject({ ordinal: 1, outcome: 'completed', memory_body: 'memory B', execution_ref: 'agent-1' });
 
     // Simulate the receipt landing in contextMemory and assert derive picks it up.
     ctx.get(IAgentContextMemoryService).append(

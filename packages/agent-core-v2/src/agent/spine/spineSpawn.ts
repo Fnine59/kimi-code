@@ -50,6 +50,11 @@ export interface SpawnBranchResult {
   readonly outcome: SpawnBranchOutcome;
   readonly memoryBody: string;
   readonly diagnostic?: string;
+  /**
+   * Forked child agent id — the upstream receipt's `execution_ref`. Absent
+   * when the branch never started (start failure or capacity rejection).
+   */
+  readonly executionRef?: string;
 }
 
 export interface SpawnExecutorDependencies {
@@ -136,7 +141,15 @@ export async function executeSpawnBranches(
           : Promise.resolve(startFailedSettle(start.error)),
       ),
     );
-    return settles.map((settle, index) => finalizeBranch(tasks[index]!, settle, batchAborted));
+    return settles.map((settle, index) => {
+      const start = starts[index]!;
+      return finalizeBranch(
+        tasks[index]!,
+        settle,
+        batchAborted,
+        start.ok ? start.branch.handle.id : undefined,
+      );
+    });
   } finally {
     await Promise.all(started.map((branch) => releaseBranch(deps, branch)));
   }
@@ -184,6 +197,7 @@ function finalizeBranch(
   task: SpineSpawnTaskInput,
   settle: BranchSettle,
   batchAborted: boolean,
+  executionRef?: string,
 ): SpawnBranchResult {
   if (settle.type === 'startFailed') {
     return {
@@ -191,6 +205,7 @@ function finalizeBranch(
       outcome: 'errored',
       memoryBody: settle.message,
       diagnostic: settle.message,
+      executionRef,
     };
   }
   if (settle.type === 'failed') {
@@ -201,6 +216,7 @@ function finalizeBranch(
         outcome: 'aborted',
         memoryBody: message,
         diagnostic: message,
+        executionRef,
       };
     }
     const { reason, salvagedMemory } = settle;
@@ -209,6 +225,7 @@ function finalizeBranch(
       outcome: reason.kind === 'abort' ? 'aborted' : 'errored',
       memoryBody: salvagedMemory ?? reason.message,
       diagnostic: reason.message,
+      executionRef,
     };
   }
   const summary = settle.summary.trim();
@@ -218,12 +235,14 @@ function finalizeBranch(
       outcome: 'errored',
       memoryBody: EMPTY_MEMORY_DIAGNOSTIC,
       diagnostic: EMPTY_MEMORY_DIAGNOSTIC,
+      executionRef,
     };
   }
   return {
     summary: task.summary,
     outcome: 'completed',
     memoryBody: summary,
+    executionRef,
   };
 }
 
