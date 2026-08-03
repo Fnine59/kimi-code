@@ -24,8 +24,6 @@ export interface IAgentSkillDisclosureService {
   resolve(skillActive: boolean): Promise<SkillDisclosureSnapshot>;
   disclosedNames(): readonly string[] | undefined;
   disclosedFloor(): SkillDisclosureFloor | undefined;
-  legacyNames(systemPrompt: string): readonly string[] | undefined;
-  listedNames(listing: string): readonly string[];
   markDisclosed(names: readonly string[], renderGeneration: number): void;
 }
 

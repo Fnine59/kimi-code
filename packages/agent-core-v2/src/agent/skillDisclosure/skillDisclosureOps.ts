@@ -7,8 +7,7 @@
  * wrote them (renders, binding snapshots, and runtime seeds), so reminder
  * baselines can order the floor against in-context reminder disclosures. A
  * newer render advances the stored generation even when its name set is
- * unchanged. Records replayed from before the field existed read as generation
- * 0.
+ * unchanged.
  */
 
 import { z } from 'zod';

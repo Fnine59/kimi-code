@@ -51,19 +51,6 @@ export class AgentSkillDisclosureService implements IAgentSkillDisclosureService
       : { names: state.names, renderGeneration: state.renderGeneration ?? 0 };
   }
 
-  legacyNames(systemPrompt: string): readonly string[] | undefined {
-    if (!systemPrompt.includes('## Available skills')) return undefined;
-    return this.listedNames(systemPrompt);
-  }
-
-  listedNames(listing: string): readonly string[] {
-    const lines = listing.split(/\r?\n/);
-    const names = this.skillCatalog.catalog
-      .getModelSkillDisclosure()
-      .names.filter((name) => lines.some((line) => line.startsWith(`- ${name}: `)));
-    return normalizeNames(names);
-  }
-
   markDisclosed(names: readonly string[], renderGeneration: number): void {
     const normalized = normalizeNames(names);
     const current = this.disclosedFloor();
