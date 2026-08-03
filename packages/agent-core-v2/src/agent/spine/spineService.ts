@@ -8,11 +8,21 @@
  * a truncation (undo / clear) truncates the tree by construction, with no
  * commit dance, no repair op, and no lost-commit audit. The read-only /
  * receipt-only control tools hand validated intent here (`acceptOpen` /
- * `acceptClose` / `acceptNext`); acceptance checks the derived cursor position,
- * enforces the single-transition-per-step rule, and records the node's
- * provider-token baseline / closing high-water mark via `contextSize` —
- * surfaced as per-node cost in `spine_tree` and as the projected-growth
- * `cursor_context` delta in `<spine_status>`. A closing span ends before the
+ * `acceptClose` / `acceptNext`); acceptance checks the derived cursor position
+ * and records the node's provider-token baseline / closing high-water mark via
+ * `contextSize` — surfaced as per-node cost in `spine_tree` and as the
+ * projected-growth `cursor_context` delta in `<spine_status>`. Transition
+ * multiplicity is NOT rejected here: every individually valid call earns its
+ * accepted receipt, and the derivation resolves one assistant response as one
+ * tool-call group — exactly one accepted control receipt in the group applies,
+ * two or more (or any mix with `spine_spawn`) apply NONE, matching the
+ * upstream reducer's group classification, so a duplicated transition fails
+ * silent instead of failing loud. The loud half of that contract lives in
+ * `guardSpawnMixing`: an `onBeforeExecuteTool` veto (which sees the whole
+ * response's call list) rejects a `spine_spawn` batched with control calls or
+ * a second `spine_spawn` before any branch work starts. Plan mode rejects
+ * every spine transition (`REJECT_PLAN_MODE`), trim included, mirroring the
+ * upstream handler gate. A closing span ends before the
  * assistant message carrying the transition call, so the carrier, its receipt,
  * and any slower tool results batched in the same response stay visible and
  * paired in the parent context; `spine.next` hands the carrier to the new
@@ -62,8 +72,12 @@ import { IAgentContextProjectorService } from '#/agent/contextProjector/contextP
 import { IAgentContextSizeService } from '#/agent/contextSize/contextSize';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { PlanModel } from '#/agent/plan/planOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
+import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import type { BeforeToolExecuteEvent } from '#/agent/toolExecutor/toolHooks';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
@@ -84,7 +98,10 @@ import { SPINE_FLAG_ID, SPINE_SPAWN_FLAG_ID, SPINE_TRIM_FLAG_ID } from './flag';
 import { appendSpineView, loadSpineViewOverride } from './instructions';
 import {
   IAgentSpineService,
+  SPINE_TOOL_CLOSE,
+  SPINE_TOOL_NEXT,
   SPINE_TOOL_OPEN,
+  SPINE_TOOL_SPAWN,
   type SpineSpawnTaskInput,
   type SpineTransitionResult,
 } from './spine';
@@ -124,10 +141,9 @@ const REJECT_DISABLED: SpineTransitionResult = {
   reason: 'Spine is disabled. Set KIMI_CODE_SPINE=1 to enable it.',
 };
 
-const REJECT_CONFLICT: SpineTransitionResult = {
+const REJECT_PLAN_MODE: SpineTransitionResult = {
   accepted: false,
-  reason:
-    'A single assistant response may include at most one Spine transition (open, close, or next).',
+  reason: 'Spine transitions are not allowed in Plan mode',
 };
 
 const REJECT_ROOT_EPOCH: SpineTransitionResult = {
@@ -152,8 +168,6 @@ const ARCHIVE_FAILURE_NOTE =
 export class AgentSpineService extends Disposable implements IAgentSpineService {
   declare readonly _serviceBrand: undefined;
 
-  /** Single-transition-per-step gate; set by an accept, cleared at step bounds. */
-  private transitionThisStep = false;
   private cachedMessages: readonly ContextMessage[] | undefined;
   private cachedState: SpineState | undefined;
   private cachedTrimMessages: readonly ContextMessage[] | undefined;
@@ -207,6 +221,7 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
     @IAgentLoopService loop: IAgentLoopService,
     @IAgentContextProjectorService projector: IAgentContextProjectorService,
     @IAgentLLMRequesterService llmRequester: IAgentLLMRequesterService,
+    @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
   ) {
     super();
     if (this.enabled) {
@@ -232,18 +247,24 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
         return appendSpineView(prompt, this.spineViewOverride);
       }),
     );
+    // Loud spawn admission, mirroring the upstream `calls_in_response_group`
+    // contract: the veto sees the whole response's call list during the
+    // executor's sequential preparation pass, so a `spine_spawn` sharing its
+    // response with a control call (or a second `spine_spawn`) is rejected
+    // before any branch work starts. The silent half — a response carrying
+    // multiple control calls applies none of them — is the derivation's
+    // carrier-group classification, not a rejection here.
     this._register(
-      loop.hooks.onWillBeginStep.register('spine', async (ctx, next) => {
+      toolExecutor.onBeforeExecuteTool((event) => this.guardSpawnMixing(event)),
+    );
+    this._register(
+      loop.hooks.onWillBeginStep.register('spine', async (_ctx, next) => {
         await this.spineViewReady;
-        // A step that ended without its did-finish hook (an abort) may have
-        // left the gate set; every step starts with a clean transition budget.
-        this.transitionThisStep = false;
         await next();
       }),
     );
     this._register(
       loop.hooks.onDidFinishStep.register('spine', async (_ctx, next) => {
-        this.transitionThisStep = false;
         await this.archiveNewlyClosed();
         await next();
       }),
@@ -310,6 +331,7 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
   ): Promise<SpineTransitionResult & { readonly receipt?: string }> {
     if (!this.enabled) return REJECT_DISABLED;
     if (!this.spawnEnabled) return REJECT_SPAWN_DISABLED;
+    if (this.planModeActive) return REJECT_PLAN_MODE;
 
     const maxThreads = resolveSpawnMaxThreads(
       this.config.get<SpineSpawnConfig>(SPINE_SPAWN_SECTION),
@@ -325,9 +347,10 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
       );
     }
 
-    // Aggregate capacity admission is checked before the per-step gate so that
-    // an overlapping fission that cannot fit is rejected with the all-or-nothing
-    // reason even while another transition is still in flight.
+    // Aggregate capacity admission is all-or-nothing: an overlapping fission
+    // that cannot fit is rejected before any branch starts. Mixing spawn with
+    // other spine calls in one response is rejected earlier, at the executor's
+    // before-execute veto (`guardSpawnMixing`).
     if (this.activeSpawnBranches + tasks.length > maxBranches) {
       return {
         accepted: false,
@@ -336,8 +359,6 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
           `Admission is all-or-nothing. Retry spine_spawn with fewer tasks after capacity is available, or increase [spine_spawn] max_concurrent_threads_per_session (env override: ${SPINE_SPAWN_MAX_THREADS_ENV}).`,
       };
     }
-
-    if (this.transitionThisStep) return REJECT_CONFLICT;
 
     const seenSummaries = new Set<string>();
     for (const [ordinal, task] of tasks.entries()) {
@@ -353,7 +374,6 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
       seenSummaries.add(summary);
     }
 
-    this.transitionThisStep = true;
     this.activeSpawnBranches += tasks.length;
     try {
       const branches = await executeSpawnBranches(
@@ -382,7 +402,6 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
         this.contextSize.get().size,
       );
     }
-    this.transitionThisStep = true;
     return { accepted: true };
   }
 
@@ -394,7 +413,6 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
     const cursorId = this.cursorId();
     if (isRootEpoch(cursorId)) return REJECT_ROOT_EPOCH;
     this.finals.set(cursorId, this.contextSize.get().size);
-    this.transitionThisStep = true;
     return { accepted: true };
   }
 
@@ -415,13 +433,13 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
     if (parentId !== null && parent !== undefined) {
       this.baselines.set(childNodeId(parentId, nextChildIndex(parent.children)), sizeNow);
     }
-    this.transitionThisStep = true;
     return { accepted: true };
   }
 
   acceptTrim(trimId: string, op: SpineTrimOp): SpineTransitionResult {
     if (!this.enabled) return REJECT_DISABLED;
     if (!this.trimEnabled) return REJECT_TRIM_DISABLED;
+    if (this.planModeActive) return REJECT_PLAN_MODE;
     const projection = this.trimProjection();
     const index = projection.tagIndex.get(trimId);
     if (index === undefined) {
@@ -499,8 +517,52 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
 
   private guard(): SpineTransitionResult | null {
     if (!this.enabled) return REJECT_DISABLED;
-    if (this.transitionThisStep) return REJECT_CONFLICT;
+    if (this.planModeActive) return REJECT_PLAN_MODE;
     return null;
+  }
+
+  /**
+   * Plan mode rejects every spine transition, trim included, mirroring the
+   * upstream handler gate (`Spine transitions are not allowed in Plan mode`).
+   * Read straight off the persisted plan Model so the gate follows undo /
+   * restore like every other wire-derived state.
+   */
+  private get planModeActive(): boolean {
+    return this.wire.getModel(PlanModel).current.active;
+  }
+
+  /**
+   * Loud spawn admission, mirroring the upstream `calls_in_response_group`
+   * contract: a `spine_spawn` batched with `spine_open` / `spine_close` /
+   * `spine_next` in the same response, or a second `spine_spawn` in it, is
+   * vetoed before execution (the before-execute event exposes the whole
+   * response's call list during the executor's sequential preparation pass).
+   * The sibling control calls still earn their accepted receipts; the
+   * derivation's carrier-group classification then applies none of them.
+   */
+  private guardSpawnMixing(event: BeforeToolExecuteEvent): void {
+    if (!this.enabled || !this.spawnEnabled) return;
+    if (event.toolCall.name !== SPINE_TOOL_SPAWN) return;
+    const mixesControl = event.toolCalls.some(
+      (call) =>
+        call.name === SPINE_TOOL_OPEN ||
+        call.name === SPINE_TOOL_CLOSE ||
+        call.name === SPINE_TOOL_NEXT,
+    );
+    if (mixesControl) {
+      event.veto(
+        denyToolExecution(
+          'spine_spawn cannot be mixed with spine_open, spine_close, or spine_next',
+        ),
+      );
+      return;
+    }
+    const spawnCalls = event.toolCalls.filter((call) => call.name === SPINE_TOOL_SPAWN);
+    if (spawnCalls.length > 1) {
+      event.veto(
+        denyToolExecution('spine_spawn may be called at most once in one model response'),
+      );
+    }
   }
 
   /**
@@ -568,7 +630,7 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
     };
   }
 
-  // Archive paths are deterministic, so the tree publishes them without
+  // The archive paths are deterministic, so the tree publishes them without
   // persisting anything; a write that failed (this session) suppresses the
   // path instead of pointing at a missing file. The epoch archive written
   // when epoch N began (holding the prior epochs' folded history) is named

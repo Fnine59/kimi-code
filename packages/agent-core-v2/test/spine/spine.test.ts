@@ -25,6 +25,8 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import {
   IAgentSpineService,
   IWireService,
+  planModeEnter,
+  planModeExit,
   SPINE_VOID_OPENED_AT,
   SpineModel,
   spineClose,
@@ -351,6 +353,85 @@ describe('Spine control tools', () => {
     expect(state.openStack).toEqual(['1', '1.1']);
   });
 
+  function textOf(message: ContextMessage | undefined): string {
+    return (message?.content ?? [])
+      .map((part) => (part.type === 'text' ? part.text : ''))
+      .join('');
+  }
+
+  it('vetoes spine_spawn mixed with a control call in one response', async () => {
+    vi.stubEnv('KIMI_CODE_SPINE_SPAWN', '1');
+    const ctx = loopContext();
+    await configureLoop(ctx);
+    ctx.mockNextResponse(
+      toolCallPart('call_open', 'spine_open', { summary: 'task A' }),
+      toolCallPart('call_spawn', 'spine_spawn', {
+        tasks: [
+          { summary: 'branch A', prompt: 'do A' },
+          { summary: 'branch B', prompt: 'do B' },
+        ],
+      }),
+    );
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] });
+    await ctx.untilTurnEnd();
+
+    const messages = ctx.get(IAgentContextMemoryService).get();
+    const openResult = messages.find((m) => m.role === 'tool' && m.toolCallId === 'call_open');
+    const spawnResult = messages.find((m) => m.role === 'tool' && m.toolCallId === 'call_spawn');
+    // The spawn is vetoed loudly at the executor before any branch work runs;
+    // the control still earns its accepted receipt...
+    expect(spawnResult?.isError).toBe(true);
+    expect(textOf(spawnResult)).toContain(
+      'spine_spawn cannot be mixed with spine_open, spine_close, or spine_next',
+    );
+    expect(openResult?.isError).not.toBe(true);
+    expect(textOf(openResult)).toBe(ACCEPTED_OUTPUT);
+    // ...but the derivation's carrier-group classification voids it: no
+    // transition, no spawn nodes.
+    const state = readSpine(ctx);
+    expect(state.openStack).toEqual(['1', '1.1']);
+    expect(state.nodes['1.1.1']).toBeUndefined();
+  });
+
+  it('vetoes a second spine_spawn in one response', async () => {
+    vi.stubEnv('KIMI_CODE_SPINE_SPAWN', '1');
+    const ctx = loopContext();
+    await configureLoop(ctx);
+    ctx.mockNextResponse(
+      toolCallPart('call_spawn_1', 'spine_spawn', {
+        tasks: [
+          { summary: 'branch A', prompt: 'do A' },
+          { summary: 'branch B', prompt: 'do B' },
+        ],
+      }),
+      toolCallPart('call_spawn_2', 'spine_spawn', {
+        tasks: [
+          { summary: 'branch C', prompt: 'do C' },
+          { summary: 'branch D', prompt: 'do D' },
+        ],
+      }),
+    );
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] });
+    await ctx.untilTurnEnd();
+
+    const messages = ctx.get(IAgentContextMemoryService).get();
+    const results = messages.filter(
+      (m) =>
+        m.role === 'tool' &&
+        (m.toolCallId === 'call_spawn_1' || m.toolCallId === 'call_spawn_2'),
+    );
+    expect(results).toHaveLength(2);
+    for (const result of results) {
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain(
+        'spine_spawn may be called at most once in one model response',
+      );
+    }
+    expect(readSpine(ctx).nodes['1.1.1']).toBeUndefined();
+  });
+
   it('commits a spine transition after an undo shrank the history', async () => {
     // The pre-fix defect dropped the post-undo transition because the evidence
     // search started past the shrunk history. Derivation has no such cursor:
@@ -632,7 +713,10 @@ describe('Spine control tools', () => {
     expect(historyText(ctx.project())).not.toContain('ORDINARY-RESULT-MARKER');
   });
 
-  it('rejects a second control tool in the same step', async () => {
+  it('applies neither control when one response carries two (silent void)', async () => {
+    // Upstream reducer parity: two successful controls in one response group
+    // turn the whole group into an ordinary tool group — both calls return
+    // their accepted receipts and the tree does not move.
     const ctx = loopContext();
     await configureLoop(ctx);
     ctx.mockNextResponse(
@@ -645,13 +729,20 @@ describe('Spine control tools', () => {
     await ctx.untilTurnEnd();
 
     const state = readSpine(ctx);
-    expect(state.nodes['1.1.1']?.summary).toBe('task A');
-    expect(state.nodes['1.1.2']).toBeUndefined();
+    expect(state.openStack).toEqual(['1', '1.1']);
+    expect(state.nodes['1.1.1']).toBeUndefined();
 
-    const rejectedToolMessage = ctx.context
+    const receipts = ctx.context
       .get()
-      .find((m) => m.role === 'tool' && m.toolCallId === 'call_open_2');
-    expect(rejectedToolMessage?.isError).toBe(true);
+      .filter(
+        (m) =>
+          m.role === 'tool' &&
+          (m.toolCallId === 'call_open_1' || m.toolCallId === 'call_open_2'),
+      );
+    expect(receipts).toHaveLength(2);
+    for (const receipt of receipts) {
+      expect(receipt.isError).not.toBe(true);
+    }
   });
 
   it('accepts close memory that references an unknown [U#] anchor', async () => {
@@ -861,6 +952,175 @@ function readSpine(ctx: TestAgentContext) {
   return ctx.get(IAgentSpineService).currentState();
 }
 
+describe('Spine plan-mode gating', () => {
+  beforeEach(() => {
+    vi.stubEnv(MASTER_ENV, '0');
+    vi.stubEnv(SPINE_ENV, '1');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('rejects open / close / next in plan mode', () => {
+    const ctx = testAgent();
+    const spine = ctx.get(IAgentSpineService);
+    ctx.get(IWireService).dispatch(planModeEnter({ id: 'plan-1' }));
+    for (const result of [
+      spine.acceptOpen('task A'),
+      spine.acceptClose('memory'),
+      spine.acceptNext('sibling', 'memory'),
+    ]) {
+      expect(result.accepted).toBe(false);
+      if (!result.accepted) {
+        expect(result.reason).toContain('Spine transitions are not allowed in Plan mode');
+      }
+    }
+  });
+
+  it('rejects spawn in plan mode', async () => {
+    vi.stubEnv('KIMI_CODE_SPINE_SPAWN', '1');
+    const ctx = testAgent();
+    const spine = ctx.get(IAgentSpineService);
+    ctx.get(IWireService).dispatch(planModeEnter({ id: 'plan-1' }));
+    const result = await spine.executeSpawn(
+      [
+        { summary: 'branch A', prompt: 'do A' },
+        { summary: 'branch B', prompt: 'do B' },
+      ],
+      new AbortController().signal,
+    );
+    expect(result.accepted).toBe(false);
+    if (!result.accepted) {
+      expect(result.reason).toContain('Spine transitions are not allowed in Plan mode');
+    }
+  });
+
+  it('rejects trim in plan mode', () => {
+    vi.stubEnv('KIMI_CODE_SPINE_TRIM', '1');
+    const ctx = testAgent();
+    const spine = ctx.get(IAgentSpineService);
+    ctx.get(IWireService).dispatch(planModeEnter({ id: 'plan-1' }));
+    const result = spine.acceptTrim('trim_1', { kind: 'snip' });
+    expect(result.accepted).toBe(false);
+    if (!result.accepted) {
+      expect(result.reason).toContain('Spine transitions are not allowed in Plan mode');
+    }
+  });
+
+  it('accepts transitions again after plan mode exits', () => {
+    const ctx = testAgent();
+    const spine = ctx.get(IAgentSpineService);
+    const wire = ctx.get(IWireService);
+    wire.dispatch(planModeEnter({ id: 'plan-1' }));
+    wire.dispatch(planModeExit({ id: 'plan-1' }));
+    expect(spine.acceptOpen('task A').accepted).toBe(true);
+  });
+});
+
+describe('Spine carrier-group classification', () => {
+  beforeEach(() => {
+    vi.stubEnv(MASTER_ENV, '0');
+    vi.stubEnv(SPINE_ENV, '1');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** One assistant message carrying several spine calls — one tool-call group. */
+  function assistantCarrier(
+    calls: ReadonlyArray<readonly [string, string, Record<string, unknown>]>,
+  ): ContextMessage {
+    return {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'calling spine tools' }],
+      toolCalls: calls.map(([id, name, args]) => ({
+        type: 'function' as const,
+        id,
+        name,
+        arguments: JSON.stringify(args),
+      })),
+    };
+  }
+
+  function errorReceipt(toolCallId: string, output: string): ContextMessage {
+    return {
+      role: 'tool',
+      content: [{ type: 'text', text: output }],
+      toolCalls: [],
+      toolCallId,
+      isError: true,
+    } as ContextMessage;
+  }
+
+  it('applies nothing when one response carries two accepted control calls', () => {
+    const ctx = testAgent();
+    ctx.get(IAgentContextMemoryService).append(
+      assistantCarrier([
+        ['call_open', 'spine_open', { summary: 'task A' }],
+        ['call_close', 'spine_close', { memory: 'did A' }],
+      ]),
+      spineReceipt('call_open'),
+      spineReceipt('call_close'),
+    );
+    const state = readSpine(ctx);
+    expect(state.openStack).toEqual(['1', '1.1']);
+    expect(state.nodes['1.1.1']).toBeUndefined();
+  });
+
+  it('applies the lone accepted control when its sibling control failed', () => {
+    const ctx = testAgent();
+    ctx.get(IAgentContextMemoryService).append(
+      assistantCarrier([
+        ['call_open', 'spine_open', { summary: 'task A' }],
+        ['call_close', 'spine_close', { memory: 'did A' }],
+      ]),
+      spineReceipt('call_open'),
+      errorReceipt('call_close', 'close rejected'),
+    );
+    const state = readSpine(ctx);
+    expect(state.nodes['1.1.1']?.summary).toBe('task A');
+    expect(state.openStack).toEqual(['1', '1.1', '1.1.1']);
+  });
+
+  it('voids spawn nodes and the control when one response mixes them', () => {
+    const ctx = testAgent();
+    const receipt = JSON.stringify({
+      schema: 'spine.spawn.result.v1',
+      results: [
+        { ordinal: 0, outcome: 'completed', memory_body: 'memory A' },
+        { ordinal: 1, outcome: 'completed', memory_body: 'memory B' },
+      ],
+    });
+    ctx.get(IAgentContextMemoryService).append(
+      assistantCarrier([
+        [
+          'call_spawn',
+          'spine_spawn',
+          {
+            tasks: [
+              { summary: 'branch A', prompt: 'do A' },
+              { summary: 'branch B', prompt: 'do B' },
+            ],
+          },
+        ],
+        ['call_open', 'spine_open', { summary: 'task A' }],
+      ]),
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: receipt }],
+        toolCalls: [],
+        toolCallId: 'call_spawn',
+        isError: false,
+      } as ContextMessage,
+      spineReceipt('call_open'),
+    );
+    const state = readSpine(ctx);
+    expect(state.openStack).toEqual(['1', '1.1']);
+    expect(state.nodes['1.1.1']).toBeUndefined();
+    expect(state.nodes['1.1.2']).toBeUndefined();
+  });
+});
+
 // The legacy op reducers are exercised directly against the wire model.
 function readOps(ctx: TestAgentContext) {
   return ctx.get(IWireService).getModel(SpineModel);
@@ -1040,10 +1300,17 @@ describe('spine_spawn service', () => {
     vi.unstubAllEnvs();
   });
 
-  it('rejects spawn when it conflicts with another transition in the same step', async () => {
-    const ctx = testAgent();
+  it('accepts spawn after a control accept (mixing is vetoed at the executor, not the service)', async () => {
+    // Service-level contract change: the per-step transition budget is gone.
+    // A `spine_spawn` batched with a control call in one response is rejected
+    // by the executor's before-execute veto (which sees the whole response);
+    // direct sequential service calls never conflict.
+    const ctx = testAgent(
+      sessionService(IAgentLifecycleService, mockLifecycleService()),
+      sessionService(ISessionSubagentService, mockSubagentService({})),
+    );
     const spine = ctx.get(IAgentSpineService);
-    spine.acceptOpen('task A');
+    expect(spine.acceptOpen('task A').accepted).toBe(true);
     const result = await spine.executeSpawn(
       [
         { summary: 'branch A', prompt: 'do A' },
@@ -1051,13 +1318,10 @@ describe('spine_spawn service', () => {
       ],
       new AbortController().signal,
     );
-    expect(result.accepted).toBe(false);
-    if (!result.accepted) {
-      expect(result.reason).toContain('at most one Spine transition');
-    }
+    expect(result.accepted).toBe(true);
   });
 
-  it('rejects a second spawn in the same step', async () => {
+  it('accepts a sequential spawn once capacity frees up (duplicates are vetoed at the executor)', async () => {
     const ctx = testAgent(
       sessionService(IAgentLifecycleService, mockLifecycleService()),
       sessionService(ISessionSubagentService, mockSubagentService({})),
@@ -1078,10 +1342,7 @@ describe('spine_spawn service', () => {
       ],
       new AbortController().signal,
     );
-    expect(second.accepted).toBe(false);
-    if (!second.accepted) {
-      expect(second.reason).toContain('at most one Spine transition');
-    }
+    expect(second.accepted).toBe(true);
   });
 
   it('rejects duplicate branch summaries in one spawn call', async () => {

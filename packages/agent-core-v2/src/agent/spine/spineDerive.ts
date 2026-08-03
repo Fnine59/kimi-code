@@ -12,7 +12,14 @@
  * sessions; persisted metadata can degrade, so the match is textual and a
  * near-miss does not count — and replays the transitions under the same
  * guards the legacy ops enforced (cursor position, non-empty bodies, root
- * epochs never close). A `spine_spawn` call whose structured JSON receipt lands
+ * epochs never close). Transition multiplicity resolves at CARRIER-group
+ * granularity, mirroring the upstream reducer's `classify_control`: one
+ * assistant response is one tool-call group — a group carrying exactly one
+ * accepted control receipt applies it, a group carrying two or more applies
+ * none (the calls still returned their success carriers; the tree simply
+ * does not move), and a group mixing `spine_spawn` with any control call
+ * applies nothing at all, spawn nodes included. A rejected or empty-body
+ * control call does not count toward the group's multiplicity. A `spine_spawn` call whose structured JSON receipt lands
  * in history synthesizes N closed sibling nodes under the current cursor in
  * input order; every sibling shares the receipt message as a point span
  * (`openedAt === closedAt === receipt index`), so the first sibling's span
@@ -191,25 +198,53 @@ export function deriveSpineState(messages: readonly ContextMessage[]): SpineStat
       continue;
     }
     if (message.role !== 'assistant') continue;
+    // Carrier-group classification (the upstream reducer's rule): one
+    // assistant response is one tool-call group. A group mixing spine_spawn
+    // with any control call applies nothing; a group carrying two or more
+    // accepted control receipts applies none of them — the whole group
+    // becomes an ordinary tool group, silently. Only a lone accepted control
+    // receipt moves the tree.
+    let hasSpawnCall = false;
+    let hasControlCall = false;
+    const spawns: SpawnReceiptInfo[] = [];
+    const transitions: Array<{ readonly name: string; readonly args: SpineTransitionArgs }> =
+      [];
     for (const call of message.toolCalls) {
       if (call.name === SPINE_TOOL_SPAWN) {
+        hasSpawnCall = true;
         const spawn = spawnReceipts.get(call.id);
-        if (spawn !== undefined) {
-          const parentId = openStack.at(-1);
-          if (parentId !== undefined) spawnNodes(parentId, spawn);
-        }
+        if (spawn !== undefined) spawns.push(spawn);
         continue;
       }
+      if (!isSpineTransitionTool(call.name)) continue;
+      hasControlCall = true;
       if (!accepted.has(call.id)) continue;
       const args = parseTransitionArgs(call.arguments);
       if (args === undefined) continue;
-      if (call.name === SPINE_TOOL_OPEN) {
-        openNode(args.summary, i);
-      } else if (call.name === SPINE_TOOL_CLOSE) {
-        closeNode(args.memory, i);
-      } else if (call.name === SPINE_TOOL_NEXT) {
-        nextNode(args.summary, args.memory, i);
+      // The upstream classifier counts a control only when its body is
+      // non-empty, so an accepted-but-empty call neither applies nor vetoes
+      // a sibling. The host never accepts empty bodies; this guard keeps
+      // degraded / legacy streams aligned.
+      if (!hasTransitionBody(call.name, args)) continue;
+      transitions.push({ name: call.name, args });
+    }
+    if (hasSpawnCall) {
+      if (hasControlCall) continue;
+      const parentId = openStack.at(-1);
+      if (parentId !== undefined) {
+        for (const spawn of spawns) spawnNodes(parentId, spawn);
       }
+      continue;
+    }
+    if (transitions.length !== 1) continue;
+    const transition = transitions[0];
+    if (transition === undefined) continue;
+    if (transition.name === SPINE_TOOL_OPEN) {
+      openNode(transition.args.summary, i);
+    } else if (transition.name === SPINE_TOOL_CLOSE) {
+      closeNode(transition.args.memory, i);
+    } else if (transition.name === SPINE_TOOL_NEXT) {
+      nextNode(transition.args.summary, transition.args.memory, i);
     }
   }
 
@@ -261,6 +296,20 @@ function collectAcceptedCallIds(messages: readonly ContextMessage[]): ReadonlySe
 
 function isSpineTransitionTool(name: string): boolean {
   return name === SPINE_TOOL_OPEN || name === SPINE_TOOL_CLOSE || name === SPINE_TOOL_NEXT;
+}
+
+/**
+ * The upstream classifier counts a control call toward a group's transition
+ * only when its body is non-empty (an empty-body call is not a control at
+ * all), so it neither applies nor voids a sibling control.
+ */
+function hasTransitionBody(name: string, args: SpineTransitionArgs): boolean {
+  if (name === SPINE_TOOL_OPEN) return args.summary.trim().length > 0;
+  if (name === SPINE_TOOL_CLOSE) return args.memory.trim().length > 0;
+  if (name === SPINE_TOOL_NEXT) {
+    return args.summary.trim().length > 0 && args.memory.trim().length > 0;
+  }
+  return false;
 }
 
 interface SpawnTask {

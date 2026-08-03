@@ -1,10 +1,11 @@
 /**
  * `spine` domain (L4) — `spine_open` control tool.
  *
- * Receipt-only: validates the child goal and registers the single per-step
- * pending transition through `spine`; the real tree move is committed by the
- * `spine` service after the step once the matching tool result lands in
- * `contextMemory`. Self-registers via `registerAgentToolService` gated on the
+ * Receipt-only: validates the child goal and earns the accepted receipt
+ * through `spine`; the receipt landing in `contextMemory` IS the tree move —
+ * unless the same assistant response carries another accepted control (or any
+ * `spine_spawn` call), in which case the derivation applies none of them.
+ * Self-registers via `registerAgentToolService` gated on the
  * `KIMI_CODE_SPINE` flag and `agentId === 'main'` (main-agent-only, like the
  * goal tools); `AgentToolActivationService` activates it into the main
  * agent's tool registry only (injecting the Agent-scope `spine`), never a

@@ -1,10 +1,11 @@
 /**
  * `spine` domain (L4) — `spine_next` control tool.
  *
- * Receipt-only: validates the sibling goal and continuation memory and
- * registers the single per-step pending transition through `spine`; the atomic
- * close+open is committed by the `spine` service after the step once the
- * matching tool result lands in `contextMemory`. Self-registers via
+ * Receipt-only: validates the sibling goal and continuation memory and earns
+ * the accepted receipt through `spine`; the receipt landing in `contextMemory`
+ * IS the atomic close+open — unless the same assistant response carries
+ * another accepted control (or any `spine_spawn` call), in which case the
+ * derivation applies none of them. Self-registers via
  * `registerAgentToolService` gated on the `KIMI_CODE_SPINE` flag and
  * `agentId === 'main'` (main-agent-only, like the goal tools);
  * `AgentToolActivationService` activates it into the main agent's tool
