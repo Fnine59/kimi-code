@@ -7,6 +7,7 @@ import {
   setUnexpectedErrorHandler,
 } from '#/_base/errors/unexpectedError';
 import { ACCEPTED_OUTPUT, toControlResult } from '#/agent/spine/tools/controlResult';
+import { SPINE_SPAWN_SECTION } from '#/agent/spine/configSection';
 import { SPINE_FLAG_ID } from '#/agent/spine/flag';
 import { SpineCloseTool } from '#/agent/spine/tools/spine-close';
 import { SpineNextTool } from '#/agent/spine/tools/spine-next';
@@ -15,6 +16,7 @@ import { SpineSpawnTool } from '#/agent/spine/tools/spine-spawn';
 import { SpineTreeTool } from '#/agent/spine/tools/spine-tree';
 import { SpineTrimTool } from '#/agent/spine/tools/spine-trim';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
 import type { ServicesAccessor } from '#/_base/di/instantiation';
@@ -801,7 +803,11 @@ describe('spine control tool main-agent gating', () => {
     ['spine_spawn', SpineSpawnTool],
   ] as const;
 
-  function accessorFor(agentId: string, flags: { spine: boolean; trim: boolean; spawn: boolean }): ServicesAccessor {
+  function accessorFor(
+    agentId: string,
+    flags: { spine: boolean; trim: boolean; spawn: boolean },
+    maxThreads?: number,
+  ): ServicesAccessor {
     const scopeContext: IAgentScopeContext = {
       _serviceBrand: undefined,
       agentId,
@@ -815,10 +821,17 @@ describe('spine control tool main-agent gating', () => {
         return false;
       },
     } as unknown as IFlagService;
+    const configService = {
+      get: (domain: string) =>
+        domain === SPINE_SPAWN_SECTION && maxThreads !== undefined
+          ? { maxConcurrentThreadsPerSession: maxThreads }
+          : undefined,
+    } as unknown as IConfigService;
     return {
       get: (id: unknown) => {
         if (id === IAgentScopeContext) return scopeContext;
         if (id === IFlagService) return flagService;
+        if (id === IConfigService) return configService;
         throw new Error(`unexpected service identifier: ${String(id)}`);
       },
     } as unknown as ServicesAccessor;
@@ -837,11 +850,9 @@ describe('spine control tool main-agent gating', () => {
   });
 
   it('spine_spawn requires capacity for at least two branches', () => {
-    vi.stubEnv('KIMI_CODE_SPINE_SPAWN_MAX_THREADS', '2');
     const contribution = getAgentToolContributions().find((c) => c.ctor === SpineSpawnTool);
     const when = contribution?.options.when;
-    expect(when?.(accessorFor('main', { spine: true, trim: false, spawn: true }))).toBe(false);
-    vi.unstubAllEnvs();
+    expect(when?.(accessorFor('main', { spine: true, trim: false, spawn: true }, 2))).toBe(false);
   });
 });
 
@@ -1073,8 +1084,23 @@ describe('spine_spawn service', () => {
     }
   });
 
+  it('rejects duplicate branch summaries in one spawn call', async () => {
+    const ctx = testAgent();
+    const spine = ctx.get(IAgentSpineService);
+    const result = await spine.executeSpawn(
+      [
+        { summary: 'branch A', prompt: 'do A' },
+        { summary: ' branch A ', prompt: 'do A again' },
+      ],
+      new AbortController().signal,
+    );
+    expect(result.accepted).toBe(false);
+    if (!result.accepted) {
+      expect(result.reason).toContain('duplicate summary `branch A`');
+    }
+  });
+
   it('rejects all-or-nothing when capacity is unavailable', async () => {
-    vi.stubEnv('KIMI_CODE_SPINE_SPAWN_MAX_THREADS', '3');
     const completions: ReturnType<typeof buildCompletionController>[] = [];
     const hangingSubagent: ISessionSubagentService = {
       _serviceBrand: undefined,
@@ -1103,6 +1129,7 @@ describe('spine_spawn service', () => {
     } as unknown as ISessionSubagentService;
 
     const ctx = testAgent(
+      { initialConfig: { spineSpawn: { maxConcurrentThreadsPerSession: 3 } } },
       sessionService(IAgentLifecycleService, mockLifecycleService()),
       sessionService(ISessionSubagentService, hangingSubagent),
     );

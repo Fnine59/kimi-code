@@ -6,6 +6,7 @@
  * tools), so importing this index is what wires spine into an Agent scope.
  */
 
+export * from './configSection';
 export * from './flag';
 export * from './instructions';
 export * from './spine';

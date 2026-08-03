@@ -1,6 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import {
+  IAgentLLMRequesterService,
+  type AgentLLMRequestFinish,
+  type AgentLLMRequestOverrides,
+} from '#/agent/llmRequester/llmRequester';
+import type { SpineSpawnTaskInput } from '#/agent/spine/spine';
+import {
+  executeSpawnBranches,
+  maxSpawnBranchCount,
+  taskEnvelope,
+  type SpawnBranchResult,
+} from '#/agent/spine/spineSpawn';
+import { APIProviderRateLimitError, APIStatusError } from '#/kosong/contract/errors';
+import type { ToolCall } from '#/kosong/contract/message';
 import type { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import type {
   AgentRunHandle,
@@ -8,14 +23,6 @@ import type {
   ISessionSubagentService,
   RunAgentOptions,
 } from '#/session/subagent/subagent';
-import type { SpineSpawnTaskInput } from '#/agent/spine/spine';
-import {
-  executeSpawnBranches,
-  maxSpawnBranchCount,
-  resolveMaxThreads,
-  taskEnvelope,
-  type SpawnBranchResult,
-} from '#/agent/spine/spineSpawn';
 
 interface FakeAgent {
   readonly id: string;
@@ -42,14 +49,21 @@ function fakeRunHandle(turnId: number, completion: Promise<{ summary: string }>)
   };
 }
 
+interface SalvageStub {
+  request?: ReturnType<typeof vi.fn>;
+  result?: Promise<AgentLLMRequestFinish>;
+}
+
 function buildFakes(tasks: readonly SpineSpawnTaskInput[]): {
   readonly lifecycle: IAgentLifecycleService;
   readonly subagentService: ISessionSubagentService;
   readonly agents: FakeAgent[];
   readonly runCompletionControllers: ReturnType<typeof buildCompletionController>[];
+  readonly salvageStubs: SalvageStub[];
 } {
   const agents: FakeAgent[] = [];
   const runCompletionControllers = tasks.map(() => buildCompletionController());
+  const salvageStubs: SalvageStub[] = tasks.map(() => ({}));
 
   const lifecycle: IAgentLifecycleService = {
     _serviceBrand: undefined,
@@ -57,7 +71,8 @@ function buildFakes(tasks: readonly SpineSpawnTaskInput[]): {
     onDidDispose: { event: () => ({ dispose: () => undefined }) } as never,
     create: () => Promise.reject(new Error('not used')),
     fork: async (_sourceAgentId, opts) => {
-      const id = `agent-${String(agents.length)}`;
+      const index = agents.length;
+      const id = `agent-${String(index)}`;
       const agent: FakeAgent = {
         id,
         removed: false,
@@ -65,10 +80,20 @@ function buildFakes(tasks: readonly SpineSpawnTaskInput[]): {
         completionValue: Promise.resolve({ summary: '' }),
       };
       agents.push(agent);
+      const stub = salvageStubs[index]!;
       return {
         id,
         accessor: {
-          get: () => {
+          get: (serviceId: unknown) => {
+            if (serviceId === IAgentContextMemoryService) {
+              return { get: () => [] };
+            }
+            if (serviceId === IAgentLLMRequesterService) {
+              stub.request ??= vi.fn(
+                () => stub.result ?? Promise.reject(new Error('unexpected salvage request')),
+              );
+              return { request: stub.request };
+            }
             throw new Error('unexpected accessor call');
           },
         },
@@ -110,7 +135,7 @@ function buildFakes(tasks: readonly SpineSpawnTaskInput[]): {
     notifyAgentTaskStopped: () => undefined,
   } as unknown as ISessionSubagentService;
 
-  return { lifecycle, subagentService, agents, runCompletionControllers };
+  return { lifecycle, subagentService, agents, runCompletionControllers, salvageStubs };
 }
 
 function buildCompletionController() {
@@ -144,14 +169,34 @@ describe('executeSpawnBranches', () => {
     expect(forkSpy).toHaveBeenCalledWith('main', { trimTrailingToolCallBatch: true });
   });
 
-  it('wraps the task in the expected envelope', () => {
-    const envelope = taskEnvelope({ summary: 'branch A', prompt: 'do A' });
-    expect(envelope).toContain('You are one branch of a spine_spawn fission');
-    expect(envelope).toContain('The original continuation is suspended during this fission');
-    expect(envelope).toContain('no supervisory model is active');
-    expect(envelope).toContain('Branch label and outcome: branch A');
+  it('wraps the task in the spawned-execution-branch envelope with the peer roster', () => {
+    const envelope = taskEnvelope(TASKS[0]!, TASKS);
+    expect(envelope).toContain('You are a spawned execution branch.');
+    expect(envelope).toContain('You are: branch A');
+    expect(envelope).toContain('Peer branches in this spawn:\n- branch B');
+    expect(envelope).not.toContain('- branch A');
+    expect(envelope).toContain(
+      'The assignment is already an active branch scope. Begin the assigned work directly.',
+    );
+    expect(envelope).toContain(
+      'Executable work is defined by the assignment. Inherited context supplies constraints and evidence for that work.',
+    );
+    expect(envelope).toContain(
+      'Every branch has a duty to inspect the shared blackboard path declared in its assignment.',
+    );
+    expect(envelope).toContain('`[branch A]`');
+    expect(envelope).toContain('`@summary`');
+    expect(envelope).toContain(
+      'Complete this branch by returning exactly one non-empty, tool-free assistant final response containing terminal memory.',
+    );
     expect(envelope).toContain('Assignment:\ndo A');
-    expect(envelope).toContain('When you finish, return only the terminal memory for this branch.');
+  });
+
+  it('lists every other branch as a peer', () => {
+    const envelope = taskEnvelope(TASKS[1]!, TASKS);
+    expect(envelope).toContain('You are: branch B');
+    expect(envelope).toContain('Peer branches in this spawn:\n- branch A');
+    expect(envelope).toContain('`[branch B]`');
   });
 
   it('returns a completed receipt when all branches succeed', async () => {
@@ -265,24 +310,131 @@ describe('executeSpawnBranches', () => {
     const results = await promise;
     expect(results.every((r) => r.outcome === 'completed')).toBe(true);
   });
+
+  function salvageFinish(text: string, toolCalls: ToolCall[] = []): AgentLLMRequestFinish {
+    return {
+      message: { role: 'assistant', content: [{ type: 'text', text }], toolCalls },
+    } as unknown as AgentLLMRequestFinish;
+  }
+
+  it('salvages terminal memory from a branch that fails with a salvageable provider error', async () => {
+    const { lifecycle, subagentService, salvageStubs, runCompletionControllers } =
+      buildFakes(TASKS);
+    const promise = executeSpawnBranches({ lifecycle, subagentService }, TASKS, makeSignal());
+    salvageStubs[0]!.result = Promise.resolve(
+      salvageFinish('confirmed progress: parsed 3 of 5 files'),
+    );
+    runCompletionControllers[0]!.reject(new APIStatusError(500, 'Internal Server Error'));
+    runCompletionControllers[1]!.resolve({ summary: 'memory B' });
+    const results = await promise;
+
+    expect(results[0]?.outcome).toBe('errored');
+    expect(results[0]?.memoryBody).toBe('confirmed progress: parsed 3 of 5 files');
+    expect(results[0]?.diagnostic).toContain('Internal Server Error');
+    expect(results[1]?.outcome).toBe('completed');
+
+    const request = salvageStubs[0]!.request!;
+    expect(request).toHaveBeenCalledTimes(1);
+    const [overrides, onPart, requestSignal] = request.mock.calls[0]! as [
+      AgentLLMRequestOverrides,
+      unknown,
+      AbortSignal,
+    ];
+    expect(overrides.tools).toEqual([]);
+    expect(overrides.retry).toEqual({ maxAttempts: 1 });
+    expect(overrides.source).toEqual({ type: 'operation', requestKind: 'spine_spawn_salvage' });
+    const salvageText = overrides.messages
+      ?.at(-1)
+      ?.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
+      .join('');
+    expect(salvageText).toContain('Do not continue execution');
+    expect(salvageText).toContain('<failure-diagnostic>');
+    expect(salvageText).toContain('Internal Server Error');
+    expect(onPart).toBeUndefined();
+    expect(requestSignal).toBeInstanceOf(AbortSignal);
+    expect(salvageStubs[1]!.request).toBeUndefined();
+  });
+
+  it('falls back to the diagnostic when the salvage request itself fails', async () => {
+    const { lifecycle, subagentService, salvageStubs, runCompletionControllers } =
+      buildFakes(TASKS);
+    const promise = executeSpawnBranches({ lifecycle, subagentService }, TASKS, makeSignal());
+    salvageStubs[0]!.result = Promise.reject(new Error('salvage unavailable'));
+    runCompletionControllers[0]!.reject(new APIStatusError(500, 'Internal Server Error'));
+    runCompletionControllers[1]!.resolve({ summary: 'memory B' });
+    const results = await promise;
+
+    expect(results[0]?.outcome).toBe('errored');
+    expect(results[0]?.memoryBody).toContain('Internal Server Error');
+    expect(results[0]?.diagnostic).toContain('Internal Server Error');
+    expect(salvageStubs[0]!.request).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not attempt salvage for deterministic failures', async () => {
+    const { lifecycle, subagentService, salvageStubs, runCompletionControllers } =
+      buildFakes(TASKS);
+    const promise = executeSpawnBranches({ lifecycle, subagentService }, TASKS, makeSignal());
+    runCompletionControllers[0]!.reject(new APIProviderRateLimitError('Too Many Requests'));
+    runCompletionControllers[1]!.resolve({ summary: 'memory B' });
+    const results = await promise;
+
+    expect(results[0]?.outcome).toBe('errored');
+    expect(results[0]?.memoryBody).toContain('Too Many Requests');
+    expect(salvageStubs[0]!.request).toBeUndefined();
+  });
+
+  it('discards a salvage response that contains tool calls', async () => {
+    const { lifecycle, subagentService, salvageStubs, runCompletionControllers } =
+      buildFakes(TASKS);
+    const promise = executeSpawnBranches({ lifecycle, subagentService }, TASKS, makeSignal());
+    salvageStubs[0]!.result = Promise.resolve(
+      salvageFinish('should not be used', [
+        { type: 'function', id: 'call-1', name: 'Bash', arguments: '{}' },
+      ]),
+    );
+    runCompletionControllers[0]!.reject(new APIStatusError(500, 'Internal Server Error'));
+    runCompletionControllers[1]!.resolve({ summary: 'memory B' });
+    const results = await promise;
+
+    expect(results[0]?.outcome).toBe('errored');
+    expect(results[0]?.memoryBody).toContain('Internal Server Error');
+  });
+
+  it('discards an empty salvage response', async () => {
+    const { lifecycle, subagentService, salvageStubs, runCompletionControllers } =
+      buildFakes(TASKS);
+    const promise = executeSpawnBranches({ lifecycle, subagentService }, TASKS, makeSignal());
+    salvageStubs[0]!.result = Promise.resolve(salvageFinish('   '));
+    runCompletionControllers[0]!.reject(new APIStatusError(500, 'Internal Server Error'));
+    runCompletionControllers[1]!.resolve({ summary: 'memory B' });
+    const results = await promise;
+
+    expect(results[0]?.outcome).toBe('errored');
+    expect(results[0]?.memoryBody).toContain('Internal Server Error');
+  });
+
+  it('skips salvage when the batch is already aborted by a start failure', async () => {
+    const { lifecycle, subagentService, salvageStubs, runCompletionControllers } =
+      buildFakes(TASKS);
+    const originalFork = lifecycle.fork;
+    let forkCalls = 0;
+    lifecycle.fork = async (sourceAgentId, opts) => {
+      forkCalls += 1;
+      if (forkCalls === 2) throw new Error('fork denied');
+      return originalFork(sourceAgentId, opts);
+    };
+
+    const promise = executeSpawnBranches({ lifecycle, subagentService }, TASKS, makeSignal());
+    runCompletionControllers[0]!.reject(new APIStatusError(500, 'Internal Server Error'));
+    const results = await promise;
+
+    expect(results[0]?.outcome).toBe('aborted');
+    expect(results[1]?.outcome).toBe('errored');
+    expect(salvageStubs[0]!.request).toBeUndefined();
+  });
 });
 
-describe('resolveMaxThreads', () => {
-  it('defaults to 4', () => {
-    expect(resolveMaxThreads(undefined)).toBe(4);
-    expect(resolveMaxThreads('')).toBe(4);
-  });
-
-  it('parses a valid positive integer', () => {
-    expect(resolveMaxThreads('8')).toBe(8);
-  });
-
-  it('falls back for invalid values', () => {
-    expect(resolveMaxThreads('abc')).toBe(4);
-    expect(resolveMaxThreads('1')).toBe(4);
-    expect(resolveMaxThreads('3.5')).toBe(4);
-  });
-
+describe('maxSpawnBranchCount', () => {
   it('computes branch capacity as maxThreads - 1', () => {
     expect(maxSpawnBranchCount(4)).toBe(3);
     expect(maxSpawnBranchCount(2)).toBe(1);

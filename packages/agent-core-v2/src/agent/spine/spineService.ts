@@ -65,6 +65,7 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { IFlagService } from '#/app/flag/flag';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
@@ -73,6 +74,12 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { IWireService } from '#/wire/wire';
 
+import {
+  resolveSpawnMaxThreads,
+  SPINE_SPAWN_MAX_THREADS_ENV,
+  SPINE_SPAWN_SECTION,
+  type SpineSpawnConfig,
+} from './configSection';
 import { SPINE_FLAG_ID, SPINE_SPAWN_FLAG_ID, SPINE_TRIM_FLAG_ID } from './flag';
 import { appendSpineView, loadSpineViewOverride } from './instructions';
 import {
@@ -109,8 +116,6 @@ import {
 import {
   executeSpawnBranches,
   maxSpawnBranchCount,
-  resolveMaxThreads,
-  SPINE_SPAWN_MAX_THREADS_ENV,
   type SpawnBranchResult,
 } from './spineSpawn';
 
@@ -192,6 +197,7 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
     @IHostEnvironment private readonly hostEnv: IHostEnvironment,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @IConfigService private readonly config: IConfigService,
     @IFlagService private readonly flags: IFlagService,
     @IAgentScopeContext private readonly agentScope: IAgentScopeContext,
     @IWireService private readonly wire: IWireService,
@@ -305,7 +311,9 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
     if (!this.enabled) return REJECT_DISABLED;
     if (!this.spawnEnabled) return REJECT_SPAWN_DISABLED;
 
-    const maxThreads = resolveMaxThreads(process.env[SPINE_SPAWN_MAX_THREADS_ENV]);
+    const maxThreads = resolveSpawnMaxThreads(
+      this.config.get<SpineSpawnConfig>(SPINE_SPAWN_SECTION),
+    );
     const maxBranches = maxSpawnBranchCount(maxThreads);
 
     if (tasks.length < 2) {
@@ -325,16 +333,24 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
         accepted: false,
         reason:
           `aggregate admission requested ${String(tasks.length)} child agents, but shared capacity was unavailable under the configured limit of ${String(maxBranches)} concurrent child agents. ` +
-          `Admission is all-or-nothing. Retry spine_spawn with fewer tasks after capacity is available, or increase ${SPINE_SPAWN_MAX_THREADS_ENV}.`,
+          `Admission is all-or-nothing. Retry spine_spawn with fewer tasks after capacity is available, or increase [spine_spawn] max_concurrent_threads_per_session (env override: ${SPINE_SPAWN_MAX_THREADS_ENV}).`,
       };
     }
 
     if (this.transitionThisStep) return REJECT_CONFLICT;
 
-    for (const task of tasks) {
-      if (task.summary.trim().length === 0 || task.prompt.trim().length === 0) {
+    const seenSummaries = new Set<string>();
+    for (const [ordinal, task] of tasks.entries()) {
+      const summary = task.summary.trim();
+      if (summary.length === 0 || task.prompt.trim().length === 0) {
         return reject('spine_spawn task summary and prompt must not be empty.');
       }
+      // Summaries are the branches' public identities (peer roster, blackboard
+      // `[summary]` / `@summary` addressing), so they must be unique per call.
+      if (seenSummaries.has(summary)) {
+        return reject(`spine_spawn task ${String(ordinal)} has duplicate summary \`${summary}\`.`);
+      }
+      seenSummaries.add(summary);
     }
 
     this.transitionThisStep = true;

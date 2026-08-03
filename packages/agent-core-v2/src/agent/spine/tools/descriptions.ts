@@ -50,13 +50,33 @@ export const SPINE_TRIM_FOLLOWING_DESCRIPTION =
   'For anchor slice, keep this many complete lines after the anchor line.';
 
 export const SPINE_SPAWN_DESCRIPTION =
-  'Fission the current continuation into parallel, independent branches. Each branch runs in its own child agent with no supervisory model active; the original continuation is suspended until all branches complete. The branches complete their assignments in parallel, and the host atomically records their outcomes in input order as a structured receipt. Use only when the branches are genuinely independent and can proceed without coordination; do not use spine_spawn for work that requires cross-branch synchronization or a shared plan.';
+  'Fission the current work into two or more concurrent peer branches created from the current full history. ' +
+  'Each branch receives a differentiated assignment and must own a semantically independent direction: either resolve a concrete uncertainty or produce an independently verifiable outcome, with an explicit scope, evidence boundary, and completion predicate. ' +
+  'A branch may investigate, review, or implement directly and must return one terminal final memory. ' +
+  'Give every branch a concise summary that is unique within this spawn call; the runtime uses it as the branch\u2019s public identity. ' +
+  'Before fission, choose one task-local shared blackboard path and repeat the same `Shared blackboard: <path>` line verbatim in every task prompt. ' +
+  'Every branch must inspect the blackboard before substantive work and once more before its final response. Discussion is optional: post only when seeking peer input or sharing useful findings, respond when useful, and never wait for a reply. ' +
+  'Use `[summary]` to identify a post and `@summary` to address a peer. The blackboard is best-effort awareness, not a source of correctness-critical state. ' +
+  'For exploration or review, treat inherited analytical conclusions as hypotheses to verify, refine, or falsify against primary evidence. ' +
+  'The original continuation is suspended during the fission; no supervisory model remains active. ' +
+  'Join waits for every branch, records their terminal results as closed task nodes under the current Spine scope atomically in input order, and then resumes the original continuation. ' +
+  'Call spine_spawn at most once in one model response; place every concurrent branch in that call\u2019s tasks array. ' +
+  'Use spawn when the current work can be differentiated into two or more independently owned branches and concurrent execution would materially improve speed or result quality. ' +
+  'Do not spawn paraphrased branches over the same tightly coupled question unless they are deliberately assigned as independent replication or falsification. ' +
+  'Branch workspace and external effects are non-transactional, so production-file writes require disjoint ownership or one explicitly named integration owner.';
 
-export const SPINE_SPAWN_TASKS_DESCRIPTION =
-  'Array of branch assignments. Must contain at least 2 entries and no more than the current capacity.';
+/**
+ * Task-count bounds sentence appended to the spawn tool description (the JSON
+ * schema carries no min/max items; host validation is authoritative).
+ */
+export function spawnTaskCountDescription(minTasks: number, maxTasks: number): string {
+  return `The tasks array must contain at least ${String(minTasks)} and at most ${String(maxTasks)} task assignments.`;
+}
+
+export const SPINE_SPAWN_TASKS_DESCRIPTION = 'Ordered differentiated branch assignments.';
 
 export const SPINE_SPAWN_SUMMARY_DESCRIPTION =
   'Concise branch label, distinct within this spawn call, and its independently owned outcome.';
 
 export const SPINE_SPAWN_PROMPT_DESCRIPTION =
-  'Complete branch assignment, including the task, any constraints, and coordination conventions the branch should follow. The branch will be run in isolation with only this prompt and the inherited context.';
+  'Complete initial branch assignment. Repeat verbatim the same task-local `Shared blackboard: <path>` line used in every task prompt in this spawn. The branch identity is this task\u2019s summary. Blackboard discussion is optional and must never become a dependency or expand the assignment.';

@@ -19,13 +19,15 @@ import type { AgentTool, ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import {
+  resolveSpawnMaxThreads,
+  SPINE_SPAWN_SECTION,
+  type SpineSpawnConfig,
+} from '#/agent/spine/configSection';
 import { SPINE_FLAG_ID, SPINE_SPAWN_FLAG_ID } from '#/agent/spine/flag';
 import { IAgentSpineService, SPINE_TOOL_SPAWN } from '#/agent/spine/spine';
-import {
-  maxSpawnBranchCount,
-  resolveMaxThreads,
-  SPINE_SPAWN_MAX_THREADS_ENV,
-} from '#/agent/spine/spineSpawn';
+import { maxSpawnBranchCount, MIN_SPAWN_TASKS } from '#/agent/spine/spineSpawn';
+import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { toSpawnResult } from './controlResult';
 import {
@@ -33,6 +35,7 @@ import {
   SPINE_SPAWN_PROMPT_DESCRIPTION,
   SPINE_SPAWN_SUMMARY_DESCRIPTION,
   SPINE_SPAWN_TASKS_DESCRIPTION,
+  spawnTaskCountDescription,
 } from './descriptions';
 
 const SpineSpawnInputSchema = z.object({
@@ -43,7 +46,7 @@ const SpineSpawnInputSchema = z.object({
         prompt: z.string().min(1).describe(SPINE_SPAWN_PROMPT_DESCRIPTION),
       }),
     )
-    .min(2)
+    .min(MIN_SPAWN_TASKS)
     .describe(SPINE_SPAWN_TASKS_DESCRIPTION),
 });
 
@@ -57,10 +60,20 @@ export const ISpineSpawnTool = createDecorator<ISpineSpawnTool>('spineSpawnTool'
 export class SpineSpawnTool implements ISpineSpawnTool {
   declare readonly _serviceBrand: undefined;
   readonly name = SPINE_TOOL_SPAWN;
-  readonly description = SPINE_SPAWN_DESCRIPTION;
+  readonly description: string;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(SpineSpawnInputSchema);
 
-  constructor(@IAgentSpineService private readonly spine: IAgentSpineService) {}
+  constructor(
+    @IAgentSpineService private readonly spine: IAgentSpineService,
+    @IConfigService private readonly config: IConfigService,
+  ) {
+    // Concrete task-count bounds go in the description text (host validation
+    // stays authoritative), matching the upstream contract.
+    const maxBranches = maxSpawnBranchCount(
+      resolveSpawnMaxThreads(this.config.get<SpineSpawnConfig>(SPINE_SPAWN_SECTION)),
+    );
+    this.description = `${SPINE_SPAWN_DESCRIPTION} ${spawnTaskCountDescription(MIN_SPAWN_TASKS, maxBranches)}`;
+  }
 
   resolveExecution(input: SpineSpawnInput): ToolExecution {
     return {
@@ -71,8 +84,8 @@ export class SpineSpawnTool implements ISpineSpawnTool {
   }
 }
 
-function spawnCapacityAtLeastTwo(): boolean {
-  const maxThreads = resolveMaxThreads(process.env[SPINE_SPAWN_MAX_THREADS_ENV]);
+function spawnCapacityAtLeastTwo(config: IConfigService): boolean {
+  const maxThreads = resolveSpawnMaxThreads(config.get<SpineSpawnConfig>(SPINE_SPAWN_SECTION));
   return maxSpawnBranchCount(maxThreads) >= 2;
 }
 
@@ -83,5 +96,5 @@ registerAgentToolService(ISpineSpawnTool, SpineSpawnTool, {
     accessor.get(IFlagService).enabled(SPINE_FLAG_ID) &&
     accessor.get(IFlagService).enabled(SPINE_SPAWN_FLAG_ID) &&
     accessor.get(IAgentScopeContext).agentId === 'main' &&
-    spawnCapacityAtLeastTwo(),
+    spawnCapacityAtLeastTwo(accessor.get(IConfigService)),
 });

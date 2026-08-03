@@ -45,6 +45,14 @@ import {
   LOOP_MAX_STEPS_PER_TURN_ENV,
   type LoopControl,
 } from '#/agent/loop/configSection';
+import '#/agent/spine/configSection';
+import {
+  DEFAULT_MAX_THREADS,
+  resolveSpawnMaxThreads,
+  SPINE_SPAWN_MAX_THREADS_ENV,
+  SPINE_SPAWN_SECTION,
+  type SpineSpawnConfig,
+} from '#/agent/spine/configSection';
 import {
   DEFAULT_MODEL_SECTION,
   MODELS_SECTION,
@@ -762,6 +770,112 @@ describe('image config section', () => {
     });
 
     disposables.dispose();
+  });
+});
+
+describe('spineSpawn config section', () => {
+  it('registers the spineSpawn section with an int >= 2 schema', () => {
+    const registry = new ConfigRegistry();
+
+    expect(registry.getSection(SPINE_SPAWN_SECTION)).toBeDefined();
+
+    expect(registry.validate(SPINE_SPAWN_SECTION, {})).toEqual({});
+    expect(
+      registry.validate(SPINE_SPAWN_SECTION, { maxConcurrentThreadsPerSession: 6 }),
+    ).toEqual({ maxConcurrentThreadsPerSession: 6 });
+    expect(() =>
+      registry.validate(SPINE_SPAWN_SECTION, { maxConcurrentThreadsPerSession: 0 }),
+    ).toThrow();
+    expect(() =>
+      registry.validate(SPINE_SPAWN_SECTION, { maxConcurrentThreadsPerSession: 1 }),
+    ).toThrow();
+    expect(() =>
+      registry.validate(SPINE_SPAWN_SECTION, { maxConcurrentThreadsPerSession: 3.5 }),
+    ).toThrow();
+  });
+
+  it('reads [spine_spawn] from config.toml and re-applies the env override on every get()', async () => {
+    const env: Record<string, string> = {};
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    await storage.write(
+      '',
+      'config.toml',
+      new TextEncoder().encode('[spine_spawn]\nmax_concurrent_threads_per_session = 6\n'),
+    );
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', env));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+
+    expect(config.get<SpineSpawnConfig>(SPINE_SPAWN_SECTION)).toEqual({
+      maxConcurrentThreadsPerSession: 6,
+    });
+
+    // Invalid env values are ignored and resolution falls back to config.toml.
+    env[SPINE_SPAWN_MAX_THREADS_ENV] = 'abc';
+    expect(config.get<SpineSpawnConfig>(SPINE_SPAWN_SECTION)).toEqual({
+      maxConcurrentThreadsPerSession: 6,
+    });
+    env[SPINE_SPAWN_MAX_THREADS_ENV] = '1';
+    expect(config.get<SpineSpawnConfig>(SPINE_SPAWN_SECTION)).toEqual({
+      maxConcurrentThreadsPerSession: 6,
+    });
+
+    // A valid env value wins over config.toml on every read.
+    env[SPINE_SPAWN_MAX_THREADS_ENV] = '8';
+    expect(config.get<SpineSpawnConfig>(SPINE_SPAWN_SECTION)).toEqual({
+      maxConcurrentThreadsPerSession: 8,
+    });
+
+    disposables.dispose();
+  });
+
+  it('restores the env-owned field to its raw value on set() while the env var is set', async () => {
+    const env: Record<string, string> = { [SPINE_SPAWN_MAX_THREADS_ENV]: '7' };
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    await storage.write(
+      '',
+      'config.toml',
+      new TextEncoder().encode('[spine_spawn]\nmax_concurrent_threads_per_session = 6\n'),
+    );
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-cfg', env));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+
+    // A client echoing the env-overlaid section back.
+    await config.set(SPINE_SPAWN_SECTION, { maxConcurrentThreadsPerSession: 7 });
+
+    // Runtime resolution still lets the env win…
+    expect(config.get<SpineSpawnConfig>(SPINE_SPAWN_SECTION)).toEqual({
+      maxConcurrentThreadsPerSession: 7,
+    });
+    // …but persistence keeps the raw value.
+    expect(config.inspect<SpineSpawnConfig>(SPINE_SPAWN_SECTION).userValue).toEqual({
+      maxConcurrentThreadsPerSession: 6,
+    });
+    const onDisk = new TextDecoder().decode(await storage.read('', 'config.toml'));
+    expect(onDisk).toContain('max_concurrent_threads_per_session = 6');
+
+    disposables.dispose();
+  });
+
+  it('resolveSpawnMaxThreads falls back to the default only when nothing is configured', () => {
+    expect(resolveSpawnMaxThreads(undefined)).toBe(DEFAULT_MAX_THREADS);
+    expect(resolveSpawnMaxThreads({})).toBe(DEFAULT_MAX_THREADS);
+    expect(resolveSpawnMaxThreads({ maxConcurrentThreadsPerSession: 8 })).toBe(8);
   });
 });
 
