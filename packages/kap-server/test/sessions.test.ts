@@ -36,8 +36,8 @@ import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
 // Dev shells may export KIMI_CODE_SPINE=1: the spine projector fold then
-// injects a `<spine_status>` line into the projected view, so a fresh
-// session's context estimate is ~47 instead of 0 and the status assertions
+// injects a `<spine_node>` startup landmark into the projected view, so a
+// fresh session's context estimate is non-zero and the status assertions
 // below break. Scrub it to keep this suite hermetic (this file runs in its
 // own worker process).
 delete process.env['KIMI_CODE_SPINE'];

@@ -293,6 +293,15 @@ describe('Spine control tools', () => {
     expect(spineToolNames(ctx)).toContain('spine_trim');
   });
 
+  it('registers spine_trim standalone with the spine flag off', () => {
+    vi.stubEnv(SPINE_ENV, '0');
+    vi.stubEnv('KIMI_CODE_SPINE_TRIM', '1');
+    const ctx = testAgent();
+    const names = spineToolNames(ctx);
+    expect(names).toContain('spine_trim');
+    expect(names).not.toContain('spine_open');
+  });
+
   it('does not register spine_trim without the trim flag', () => {
     const ctx = testAgent();
     expect(spineToolNames(ctx)).not.toContain('spine_trim');
@@ -937,7 +946,12 @@ describe('spine control tool main-agent gating', () => {
     const needsTrim = name === 'spine_trim';
     expect(when?.(accessorFor('main', { spine: true, trim: needsTrim, spawn: needsSpawn }))).toBe(true);
     expect(when?.(accessorFor('sub-1', { spine: true, trim: needsTrim, spawn: needsSpawn }))).toBe(false);
-    expect(when?.(accessorFor('main', { spine: false, trim: needsTrim, spawn: needsSpawn }))).toBe(false);
+    // spine_trim runs STANDALONE (upstream `materialize_trim_only_context`):
+    // it needs only its own flag; every other spine tool requires the spine
+    // flag itself.
+    expect(when?.(accessorFor('main', { spine: false, trim: needsTrim, spawn: needsSpawn }))).toBe(
+      needsTrim,
+    );
   });
 
   it('spine_spawn requires capacity for at least two branches', () => {

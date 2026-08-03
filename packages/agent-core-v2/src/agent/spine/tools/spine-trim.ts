@@ -8,9 +8,10 @@
  * trim, re-derived by the projection on every read. A malformed slice shape
  * (not exactly one of head / tail / anchor) rejects here with a retryable
  * reason, before any receipt exists. Self-registers via
- * `registerAgentToolService` gated on BOTH the `KIMI_CODE_SPINE` and
- * `KIMI_CODE_SPINE_TRIM` flags and `agentId === 'main'` (main-agent-only, like
- * the other spine tools). Bound at Agent scope.
+ * `registerAgentToolService` gated on the `KIMI_CODE_SPINE_TRIM` flag and
+ * `agentId === 'main'` (main-agent-only, like the other spine tools) — the
+ * spine flag is NOT required: trim runs standalone when the tree fold is off
+ * (upstream `materialize_trim_only_context`). Bound at Agent scope.
  */
 
 import { z } from 'zod';
@@ -21,7 +22,7 @@ import type { AgentTool, ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { SPINE_FLAG_ID, SPINE_TRIM_FLAG_ID } from '#/agent/spine/flag';
+import { SPINE_TRIM_FLAG_ID } from '#/agent/spine/flag';
 import { IAgentSpineService, SPINE_TOOL_TRIM } from '#/agent/spine/spine';
 import { normalizeTrimOp } from '#/agent/spine/spineTrimDerive';
 import { IFlagService } from '#/app/flag/flag';
@@ -82,7 +83,6 @@ registerAgentToolService(ISpineTrimTool, SpineTrimTool, {
   name: SPINE_TOOL_TRIM,
   domain: 'spine',
   when: (accessor) =>
-    accessor.get(IFlagService).enabled(SPINE_FLAG_ID) &&
     accessor.get(IFlagService).enabled(SPINE_TRIM_FLAG_ID) &&
     accessor.get(IAgentScopeContext).agentId === 'main',
 });

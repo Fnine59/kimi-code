@@ -11,7 +11,16 @@
  * `acceptClose` / `acceptNext`); acceptance checks the derived cursor position
  * and records the node's provider-token baseline / closing high-water mark via
  * `contextSize` — surfaced as per-node cost in `spine_tree` and as the
- * projected-growth `cursor_context` delta in `<spine_status>`. Transition
+ * projected-growth `cursor_context` delta in `<spine_tran_status>`. The status
+ * line mirrors the upstream emission contract (`spine/status.rs` + `engine.rs
+ * on_sampling_complete`): it is NOT a projection artifact appended to every
+ * request — after a step in which the derivation reports an applied transition
+ * (cursor-stack change), the service persists one `<spine_tran_status>`
+ * injection into the history, so the line survives resume, renders as an
+ * ordinary message in live ranges, and folds away with the span that closes
+ * over it. Undo / restore / splice never re-emit: their handlers re-baseline
+ * the transition signature, so the surviving history carries the correct
+ * orientation, exactly like the upstream rollout. Transition
  * multiplicity is NOT rejected here: every individually valid call earns its
  * accepted receipt, and the derivation resolves one assistant response as one
  * tool-call group — exactly one accepted control receipt in the group applies,
@@ -46,7 +55,11 @@
  * stream derives the oversized-result tags and replays the accepted
  * `spine_trim` receipts (`deriveSpineTrimProjection`), the fold renders them,
  * and `acceptTrim` validates calls against that same derivation — one
- * eligibility source for rendering and validation. Renders the read-only
+ * eligibility source for rendering and validation. Trim runs STANDALONE
+ * (upstream `materialize_trim_only_context`): with the spine flag off and the
+ * trim flag on, the projector fold renders the trim projection over the plain
+ * history (no tree fold, no status line) and `spine_trim` stays available.
+ * Renders the read-only
  * `spine_tree` view across every root epoch (current first by
  * numeric order), so a superseded epoch's closed-node archives stay
  * discoverable after a root compaction. Registers its history fold into
@@ -54,9 +67,10 @@
  * (spine → projector / llmRequester, never the reverse); the prompt
  * contribution self-gates per request, so only turn requests whose tool list
  * can act on the protocol (i.e. that offer `spine_open`) carry it — sub-agents
- * and operations such as compaction never see it. Self-checks the
- * `KIMI_CODE_SPINE` gate at construction, so a disabled spine never observes
- * history. Bound at Agent scope.
+ * and operations such as compaction never see it. Self-checks the flags at
+ * construction: with both spine and trim off the service never observes
+ * history (no fold registration), and with trim alone on it observes history
+ * only for the trim projection. Bound at Agent scope.
  */
 
 import { join } from 'pathe';
@@ -117,7 +131,8 @@ import {
   type SpineTrimOp,
   type SpineTrimProjection,
 } from './spineTrimDerive';
-import { foldSpine, type SpineFoldStatus } from './spineFold';
+import { buildSpineTranStatusMessage, foldSpine, type SpineFoldStatus } from './spineFold';
+import { applySpineTrim } from './spineTrimFold';
 import { type SpineNode, type SpineState } from './spineOps';
 import {
   childNodeId,
@@ -202,6 +217,17 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
    * `spine_spawn` fission. Ephemeral: reset at step bounds and on restore.
    */
   private activeSpawnBranches = 0;
+  /**
+   * The cursor-position signature (root epoch + open stack) the last
+   * `<spine_tran_status>` was emitted for. Mirroring the upstream
+   * `on_sampling_complete` gate (`applied_transition.is_some()`), a status is
+   * appended only when a finished step CHANGED this signature — spawn joins,
+   * trims, and silent no-apply groups leave it untouched; undo / restore /
+   * splice re-baseline it without emitting, so the surviving history (whose
+   * persisted statuses truncate along with everything else) stays the correct
+   * orientation. Ephemeral by construction; initialized from the derivation.
+   */
+  private statusSignature: string;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -233,9 +259,14 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
           this.spineViewOverride = override;
         },
       );
-      // Fold registration is the only thing the projector ever learns about
-      // spine; gated on the flag so a disabled spine never touches the
-      // projection. Construction is Eager, so this lands before the first send.
+    }
+    // Fold registration is the only thing the projector ever learns about
+    // spine; gated on the flags so a fully disabled surface never touches the
+    // projection. Trim runs STANDALONE (upstream
+    // `materialize_trim_only_context`): spine off + trim on still renders the
+    // trim projection over the plain history. Construction is Eager, so this
+    // lands before the first send.
+    if (this.enabled || this.trimEnabled) {
       this._register(projector.registerContextFold('spine', (messages) => this.fold(messages)));
     }
     this._register(
@@ -265,6 +296,7 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
     this._register(
       loop.hooks.onDidFinishStep.register('spine', async (_ctx, next) => {
         await this.archiveNewlyClosed();
+        this.appendTransitionStatus();
         await next();
       }),
     );
@@ -284,6 +316,10 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
         this.archivedIds.clear();
         this.failedArchiveIds.clear();
         this.activeSpawnBranches = 0;
+        // Re-baseline without emitting: the restored history already carries
+        // its persisted `<spine_tran_status>` items, so a resume must not
+        // append a fresh one (upstream: the rollout's items survive as-is).
+        this.statusSignature = transitionSignature(this.derivedState());
         await next();
       }),
     );
@@ -301,8 +337,18 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
         // ids fresh.
         this.archivedIds.clear();
         this.failedArchiveIds.clear();
+        // A splice truncates persisted statuses along with everything else, so
+        // the surviving history already orients correctly: re-baseline the
+        // transition signature from the post-splice derivation (the event
+        // fires after the mutation) instead of emitting a fresh status.
+        this.statusSignature = transitionSignature(this.derivedState());
       }),
     );
+    // Baseline the transition signature: a fresh scope derives the synthetic
+    // root epoch + startup node; a resumed session re-baselines in the
+    // restore hook above. Construction is Eager (OnScopeCreated), so this
+    // lands before any transition can be accepted.
+    this.statusSignature = transitionSignature(this.derivedState());
   }
 
   get enabled(): boolean {
@@ -437,7 +483,8 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
   }
 
   acceptTrim(trimId: string, op: SpineTrimOp): SpineTransitionResult {
-    if (!this.enabled) return REJECT_DISABLED;
+    // Trim runs standalone (upstream `materialize_trim_only_context`): the
+    // spine flag is deliberately NOT required here — only the trim flag.
     if (!this.trimEnabled) return REJECT_TRIM_DISABLED;
     if (this.planModeActive) return REJECT_PLAN_MODE;
     const projection = this.trimProjection();
@@ -473,16 +520,41 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
   }
 
   fold(messages: readonly ContextMessage[]): readonly ContextMessage[] {
-    if (!this.enabled) return messages;
+    if (!this.enabled) {
+      // Standalone trim (upstream `materialize_trim_only_context`): no tree
+      // fold and no status line — every message is live range, so the trim
+      // projection maps over the plain history as-is.
+      if (!this.trimEnabled) return messages;
+      const trim = this.trimProjection();
+      return messages.map((message, index) => applySpineTrim(trim, index, message));
+    }
     const state = this.state();
     const epochSummaryMessage =
       state.epochMemoryAt === undefined ? undefined : messages[state.epochMemoryAt];
     const trim = this.trimEnabled ? this.trimProjection() : undefined;
-    return foldSpine(messages, { state, status: this.buildStatus(), epochSummaryMessage, trim });
+    return foldSpine(messages, { state, epochSummaryMessage, trim });
   }
 
   currentState(): SpineState {
     return this.state();
+  }
+
+  /**
+   * The upstream `<spine_tran_status>` emission contract: after a step whose
+   * derivation shows an applied transition (cursor-stack change), persist one
+   * status injection into the history. Everything else — ordinary steps,
+   * spawn joins, trims, silent no-apply groups — leaves the signature alone
+   * and appends nothing. The appended message is an ordinary history item: it
+   * renders in live ranges, folds away with the span that closes over it, and
+   * survives resume; undo / restore / splice re-baseline the signature in
+   * their own handlers instead of passing through here.
+   */
+  private appendTransitionStatus(): void {
+    if (!this.enabled) return;
+    const signature = transitionSignature(this.derivedState());
+    if (signature === this.statusSignature) return;
+    this.statusSignature = signature;
+    this.context.append(buildSpineTranStatusMessage(this.buildStatus()));
   }
 
   private buildStatus(): SpineFoldStatus {
@@ -738,6 +810,15 @@ function topOf(state: SpineState): string {
     throw new Error('Spine openStack is empty; the tree must always contain a root epoch.');
   }
   return top;
+}
+
+/**
+ * The cursor-position identity a `<spine_tran_status>` is emitted for: the
+ * root epoch plus the open stack. Open / close / next change it; spawn joins,
+ * trims, silent no-apply groups, and ordinary steps do not.
+ */
+function transitionSignature(state: SpineState): string {
+  return `${String(state.rootEpoch)}|${state.openStack.join('.')}`;
 }
 
 function messageText(message: ContextMessage): string {

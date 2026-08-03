@@ -26,10 +26,16 @@
  * close that folds its span. Tool messages in live ranges additionally pass
  * the trim projection (when given): oversized results keep their full body
  * behind a byte-stable `[TRIM_ID: trim_N]` label, and accepted trims render
- * as the cleared placeholder or a kept slice. A synthetic `<spine_status>`
- * orientation line closes the view. The stored history is never mutated;
- * token numbers for the status line are precomputed by the `spine` service
- * and passed in. Consumed by `spineService.fold`.
+ * as the cleared placeholder or a kept slice. The stored history is never
+ * mutated. Consumed by `spineService.fold`.
+ *
+ * The `<spine_tran_status>` orientation line is NOT a projection artifact:
+ * mirroring the upstream (`spine/status.rs` + `engine.rs`
+ * `on_sampling_complete`), the spine service appends a PERSISTED injection to
+ * the history after every step that applied a transition, so the line renders
+ * as an ordinary message in live ranges, folds away with the span that closes
+ * over it, and survives resume. `buildSpineTranStatusMessage` renders it; the
+ * fold never synthesizes one.
  *
  * Span invariants (mirroring the upstream reducer): a closed span ends BEFORE
  * the assistant message carrying the close/next call, so the carrier, its
@@ -72,7 +78,6 @@ export interface SpineFoldStatus {
 export interface SpineFoldInput {
   readonly state: SpineState;
   readonly epochSummaryMessage?: ContextMessage;
-  readonly status?: SpineFoldStatus;
   /** Derived trim projection applied to tool messages in live ranges. */
   readonly trim?: SpineTrimProjection;
 }
@@ -106,9 +111,6 @@ export function foldSpine(
     for (let i = state.epochStartAt; i < messages.length; i++) pushRaw(ctx, i, out);
   }
 
-  if (input.status !== undefined) {
-    out.push(statusMessage(input.status));
-  }
   return out;
 }
 
@@ -274,7 +276,14 @@ function prefixFirstText(content: readonly ContentPart[], anchor: string): Conte
   );
 }
 
-function statusMessage(status: SpineFoldStatus): ContextMessage {
+/**
+ * Renders the `<spine_tran_status>` orientation item the service persists into
+ * the history after a transition step (upstream `format_spine_transition_status`
+ * shape). Field extras beyond the upstream six (`raw_context`,
+ * `projected_context`) are a deliberate local extension: they cost nothing at
+ * emission time and give the model the fold's saving in the same line.
+ */
+export function buildSpineTranStatusMessage(status: SpineFoldStatus): ContextMessage {
   const parent = status.parentId === null ? '' : ` parent="${status.parentId}"`;
   const parentSummary =
     status.parentSummary === null ? '' : ` parent_summary="${escapeAttr(status.parentSummary)}"`;
@@ -286,12 +295,12 @@ function statusMessage(status: SpineFoldStatus): ContextMessage {
   const projectedContext = ` projected_context="${projectedPrefix}${formatTokens(
     status.projectedContext,
   )}"`;
-  const text = `<spine_status cursor="${status.cursorId}" summary="${escapeAttr(status.summary)}"${parent}${parentSummary}${cursorContext}${contextLeft}${rawContext}${projectedContext} />`;
+  const text = `<spine_tran_status cursor="${status.cursorId}" summary="${escapeAttr(status.summary)}"${parent}${parentSummary}${cursorContext}${contextLeft}${rawContext}${projectedContext} />`;
   return {
     role: 'user',
     content: [{ type: 'text', text }],
     toolCalls: [],
-    origin: { kind: 'injection', variant: 'spine_status' },
+    origin: { kind: 'injection', variant: 'spine_tran_status' },
   };
 }
 

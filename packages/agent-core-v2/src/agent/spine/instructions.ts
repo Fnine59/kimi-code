@@ -94,7 +94,7 @@ Conventions:
   a transition solely for delivery.
 * Root-epoch ids such as \`1\` or \`2\` cannot be closed. The initial \`1.1\` is a
   startup work node, not a concrete task node; use \`spine_open\` before doing task work.
-* \`<spine_status>\` gives current node orientation; \`<spine_memory>\` gives
+* \`<spine_tran_status>\` gives current node orientation; \`<spine_memory>\` gives
   continuation memory from closed work.
 * \`[U#]\` anchors refer to numbered user requests. When writing memory, preserve
   \`[U#]\` anchors for user requests that still matter. Do not maintain a separate

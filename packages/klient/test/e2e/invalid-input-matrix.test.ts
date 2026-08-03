@@ -300,8 +300,8 @@ beforeAll(async () => {
   // The engine resolves experimental flags through the env handed to
   // bootstrap. Scrub the flag switches so the wire-shape assertions below pin
   // the default-flag pipeline no matter what the developer's shell exports —
-  // an ambient KIMI_CODE_SPINE=1 would otherwise fold <spine_node> /
-  // <spine_status> user messages into every projection, and the master switch
+  // an ambient KIMI_CODE_SPINE=1 would otherwise fold `<spine_node>` landmark
+  // user messages into every projection, and the master switch
   // would force-enable the remaining experimental surfaces.
   const engineEnv = { ...process.env };
   delete engineEnv['KIMI_CODE_EXPERIMENTAL_FLAG'];

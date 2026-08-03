@@ -39,14 +39,16 @@ export const SPINE_TRIM_FLAG_ENV = 'KIMI_CODE_SPINE_TRIM';
  * Gates the tool-response trim projection: oversized tool results carry a
  * stable `TRIM_ID` tag and the model can conservatively snip / slice them out
  * of the projected context via `spine_trim`. The stored history is never
- * rewritten. Requires the spine flag (the fold is integrated into the spine
- * projector fold), and keeps `ignoreMaster: true` for the same reason.
+ * rewritten. Runs STANDALONE (upstream `materialize_trim_only_context`): with
+ * the spine flag off and this flag on, the trim projection applies over the
+ * plain history without the tree fold; with both on, it integrates into the
+ * spine fold's live ranges. Keeps `ignoreMaster: true` for the same reason.
  */
 export const spineTrimFlag: FlagDefinitionInput = {
   id: SPINE_TRIM_FLAG_ID,
   title: 'Spine trim (tool-response trimming)',
   description:
-    'Tag oversized tool results with a stable TRIM_ID and let the model conservatively trim them from the projected context (spine_trim); the stored history is never rewritten. Requires the spine flag.',
+    'Tag oversized tool results with a stable TRIM_ID and let the model conservatively trim them from the projected context (spine_trim); the stored history is never rewritten. Works standalone or inside the spine fold.',
   env: SPINE_TRIM_FLAG_ENV,
   default: false,
   surface: 'core',

@@ -76,7 +76,7 @@ describe('Spine projection fold', () => {
     const folded = fold(ctx);
 
     expect(stored).toHaveLength(idx.after + 1);
-    expect(folded).toHaveLength(7);
+    expect(folded).toHaveLength(6);
     // The open startup node carries the structural landmark.
     expect(textOf(folded[0])).toBe(
       '<spine_node id="1.1" summary="startup" status="live" />',
@@ -88,23 +88,113 @@ describe('Spine projection fold', () => {
     expect(textOf(folded[3])).toContain('calling spine_close');
     expect(textOf(folded[5])).toContain('[U2]');
     expect(textOf(folded[5])).toContain('after');
-    expect(textOf(folded[6])).toContain('<spine_status');
-    expect(textOf(folded[6])).toContain('cursor="1.1"');
-    // No usage anchor in this harness: the projected whole-context number
-    // carries the estimate marker, and the raw stored history is contrasted
-    // beside it.
-    expect(textOf(folded[6])).toMatch(/ raw_context="~\d/);
-    expect(textOf(folded[6])).toMatch(/ projected_context="~\d/);
+    // The fold never synthesizes a status line: `<spine_tran_status>` is a
+    // persisted history item appended by the service after transition steps
+    // (unit-built histories have none).
+    expect(folded.some((m) => textOf(m).includes('<spine_tran_status'))).toBe(false);
   });
 
-  it('carries the parent goal summary in the status line', () => {
+  it('persists one spine_tran_status per transition step, carrying the parent summary', async () => {
     const ctx = testAgent();
-    buildClosedNodeHistory(ctx);
+    await configureLoop(ctx);
+    ctx.mockNextResponse(toolCallPart('c_open', 'spine_open', { summary: 'task A' }));
+    ctx.mockNextResponse({ type: 'text', text: 'working' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] });
+    await ctx.untilTurnEnd();
 
-    const status = statusText(fold(ctx));
-    expect(status).toContain('cursor="1.1"');
-    expect(status).toContain('parent="1"');
-    expect(status).toContain('parent_summary="root epoch 1"');
+    // The open step applied a transition: exactly one status landed in the
+    // STORED history (it is a persisted item, not a projection artifact).
+    let statuses = tranStatuses(ctx);
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toContain('cursor="1.1.1"');
+    expect(statuses[0]).toContain('summary="task A"');
+    expect(statuses[0]).toContain('parent="1.1"');
+    expect(statuses[0]).toContain('parent_summary="startup"');
+    expect(statuses[0]).toMatch(/ raw_context="~\d/);
+    // The loop harness returns a usage record, so the projected whole-context
+    // number may be anchored (no estimate marker) or estimated.
+    expect(statuses[0]).toMatch(/ projected_context="~?\d/);
+
+    // A step without a transition appends nothing (upstream: emission only
+    // follows a step whose sampling applied a transition).
+    ctx.mockNextResponse({ type: 'text', text: 'still working' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue' }] });
+    await ctx.untilTurnEnd();
+    expect(tranStatuses(ctx)).toHaveLength(1);
+
+    // The close step transitions again: a second status orients to the parent.
+    ctx.mockNextResponse(toolCallPart('c_close', 'spine_close', { memory: 'mem A' }));
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'wrap' }] });
+    await ctx.untilTurnEnd();
+    statuses = tranStatuses(ctx);
+    expect(statuses).toHaveLength(2);
+    expect(statuses[1]).toContain('cursor="1.1"');
+    expect(statuses[1]).toContain('parent="1"');
+    expect(statuses[1]).toContain('parent_summary="root epoch 1"');
+  });
+
+  it('renders persisted statuses as ordinary live-range messages and folds them away with their span', async () => {
+    const ctx = testAgent();
+    await configureLoop(ctx);
+    // Four transition steps in one turn: open parent, open child, close
+    // child, close parent. Each appends its status right after its receipts.
+    ctx.mockNextResponse(toolCallPart('c_open_p', 'spine_open', { summary: 'parent' }));
+    ctx.mockNextResponse(toolCallPart('c_open_c', 'spine_open', { summary: 'child' }));
+    ctx.mockNextResponse(toolCallPart('c_close_c', 'spine_close', { memory: 'mem child' }));
+    ctx.mockNextResponse(toolCallPart('c_close_p', 'spine_close', { memory: 'mem parent' }));
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] });
+    await ctx.untilTurnEnd();
+
+    // The stored history keeps all four persisted statuses...
+    expect(tranStatuses(ctx)).toHaveLength(4);
+    // ...but the first three landed inside the parent's span and folded away
+    // with it; only the post-close orientation survives in the projection.
+    const visible = fold(ctx).filter((m) => textOf(m).includes('<spine_tran_status'));
+    expect(visible).toHaveLength(1);
+    expect(textOf(visible[0])).toContain('cursor="1.1"');
+  });
+
+  it('persists statuses across resume without re-emitting', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const ctx = testAgent(
+      execEnvServices({ hostFs: recordingHostFs(new Map()) }),
+      wireRecordPersistenceServices(persistence),
+    );
+    await configureLoop(ctx);
+    ctx.mockNextResponse(toolCallPart('c_open', 'spine_open', { summary: 'task A' }));
+    ctx.mockNextResponse(toolCallPart('c_close', 'spine_close', { memory: 'mem A' }));
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] });
+    await ctx.untilTurnEnd();
+    expect(tranStatuses(ctx)).toHaveLength(2);
+    await ctx.wire.flush();
+
+    const resumed = testAgent(
+      execEnvServices({ hostFs: recordingHostFs(new Map()) }),
+      wireRecordPersistenceServices(
+        new InMemoryWireRecordPersistence(withMetadata(cloneRecords(persistence.records))),
+      ),
+    );
+    await resumed.restorePersisted();
+    await configureLoop(resumed);
+
+    // The restored history carries both persisted statuses; an ordinary turn
+    // applies no transition, so nothing new is appended.
+    resumed.mockNextResponse({ type: 'text', text: 'back' });
+    await resumed.rpc.prompt({ input: [{ type: 'text', text: 'resume' }] });
+    await resumed.untilTurnEnd();
+    expect(tranStatuses(resumed)).toHaveLength(2);
+
+    // The next transition on the resumed session appends exactly one more.
+    resumed.mockNextResponse(toolCallPart('c_open2', 'spine_open', { summary: 'task B' }));
+    resumed.mockNextResponse({ type: 'text', text: 'done' });
+    await resumed.rpc.prompt({ input: [{ type: 'text', text: 'next' }] });
+    await resumed.untilTurnEnd();
+    const statuses = tranStatuses(resumed);
+    expect(statuses).toHaveLength(3);
+    expect(statuses[2]).toContain('cursor="1.1.2"');
   });
 
   it('flattens nested closed nodes into per-node memory slots', () => {
@@ -131,7 +221,7 @@ describe('Spine projection fold', () => {
 
     const folded = fold(ctx);
     expect(folded.some((m) => textOf(m).includes('<spine_memory'))).toBe(false);
-    expect(folded.some((m) => textOf(m).includes('<spine_status'))).toBe(false);
+    expect(folded.some((m) => textOf(m).includes('<spine_tran_status'))).toBe(false);
   });
 
   it('folds the projection through the context projector hook', () => {
@@ -286,37 +376,41 @@ describe('Spine projection fold', () => {
     expect(systemPrompt).not.toContain('Spine-managed');
   });
 
-  it('reports cursor_context as the projected growth since the cursor opened', () => {
+  it('reports cursor_context as the projected growth since the cursor opened', async () => {
     const ctx = testAgent();
-    const spine = ctx.get(IAgentSpineService);
     // A sizable pre-open history the baseline must exclude from the delta.
     append(ctx, userMessage('start'));
     append(ctx, assistantText('earlier work '.repeat(40)));
-    // Accept records the open baseline, then the carrier and its receipt land.
-    expect(spine.acceptOpen('task A').accepted).toBe(true);
-    append(ctx, assistantToolCall('c_open', 'spine_open', JSON.stringify({ summary: 'task A' })));
-    append(ctx, spineAcceptedReceipt('c_open'));
+    await configureLoop(ctx);
+    ctx.mockNextResponse(toolCallPart('c_open', 'spine_open', { summary: 'task A' }));
+    ctx.mockNextResponse({ type: 'text', text: 'opened' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'go' }] });
+    await ctx.untilTurnEnd();
 
-    const status = statusText(fold(ctx));
-    const cursorContext = Number(/cursor_context="~(\d+)"/.exec(status)?.[1]);
-    // Only the carrier and its receipt rode in since the baseline; the
-    // pre-open history (~130 tokens) must not leak into the budget signal.
+    const statuses = tranStatuses(ctx);
+    expect(statuses).toHaveLength(1);
+    const cursorContext = Number(/cursor_context="~(\d+)"/.exec(statuses[0] ?? '')?.[1]);
+    // Only the carrier's receipt rode in since the open accept recorded the
+    // baseline; the pre-open history (~130 tokens) and the prompt must not
+    // leak into the budget signal.
     expect(cursorContext).toBeLessThan(60);
   });
 
-  it('derives context_left from the overflow-observed effective max', () => {
+  it('derives context_left from the overflow-observed effective max', async () => {
     const ctx = testAgent();
-    ctx.configure({
-      provider: CATALOGUED_PROVIDER,
-      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
-    });
+    await configureLoop(ctx);
     ctx.get(IAgentProfileService).observeMaxContextTokens(100_000);
-    append(ctx, userMessage('hi'));
+    ctx.mockNextResponse(toolCallPart('c_open', 'spine_open', { summary: 'task A' }));
+    ctx.mockNextResponse({ type: 'text', text: 'opened' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'go' }] });
+    await ctx.untilTurnEnd();
 
     // The catalogued 256K window clamps to the observed 100K ceiling; the
     // tiny harness history leaves (nearly) the full observed window as
     // headroom instead of ~256K.
-    expect(statusText(fold(ctx))).toContain('context_left="~100K"');
+    const statuses = tranStatuses(ctx);
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toContain('context_left="~100K"');
   });
 
   it('renders a closed node cost from its baseline-to-close gauge delta', async () => {
@@ -479,8 +573,7 @@ describe('Spine projection fold', () => {
     expect(texts[4]).toBe(ACCEPTED_OUTPUT);
     expect(texts[5]).toBe('working');
     expect(texts[6]).toBe('[U2] after');
-    expect(texts.at(-1)).toContain('<spine_status');
-    expect(texts.at(-1)).toContain('cursor="1.1.1"');
+    expect(texts.some((text) => text.includes('<spine_tran_status'))).toBe(false);
   });
 
   it('preserves media parts of a user request inside a closed span', () => {
@@ -674,7 +767,6 @@ describe('Spine logical session conformance', () => {
       'assistant: calling spine_close',
       `tool: ${ACCEPTED_OUTPUT}`,
       'user: [U2] 下一步',
-      'user (spine_status): <spine_status cursor="1.1" summary="startup" parent="1" parent_summary="root epoch 1" cursor_context="~N" context_left="~N" raw_context="~N" projected_context="~N" />',
     ]);
     expectDerivationMatchesOps(ctx);
   });
@@ -710,7 +802,6 @@ describe('Spine logical session conformance', () => {
       'assistant: calling spine_close',
       `tool: ${ACCEPTED_OUTPUT}`,
       'user: [U2] final',
-      'user (spine_status): <spine_status cursor="1.1" summary="startup" parent="1" parent_summary="root epoch 1" cursor_context="~N" context_left="~N" raw_context="~N" projected_context="~N" />',
     ]);
     expectDerivationMatchesOps(ctx);
   });
@@ -741,7 +832,6 @@ describe('Spine logical session conformance', () => {
       'assistant: calling spine_close',
       `tool: ${ACCEPTED_OUTPUT}`,
       'user: [U3] tail',
-      'user (spine_status): <spine_status cursor="2.1" summary="startup" parent="2" parent_summary="root epoch 2" cursor_context="~N" context_left="~N" raw_context="~N" projected_context="~N" />',
     ]);
     expectDerivationMatchesOps(ctx);
   });
@@ -1491,8 +1581,16 @@ function textOf(message: { content?: readonly { type: string; text?: string }[] 
   );
 }
 
-function statusText(folded: readonly ContextMessage[]): string {
-  return textOf(folded.find((m) => textOf(m).includes('<spine_status')));
+/**
+ * Text of every persisted `<spine_tran_status>` injection in the STORED
+ * history, in stream order. The fold never synthesizes one: a status exists
+ * only because the service appended it after a transition step.
+ */
+function tranStatuses(ctx: TestAgentContext): string[] {
+  return ctx.context
+    .get()
+    .map((message) => textOf(message))
+    .filter((text) => text.includes('<spine_tran_status'));
 }
 
 // --- Logical session fixtures ----------------------------------------------
@@ -1868,6 +1966,76 @@ describe('Spine trim projection', () => {
     });
     expect(normalizeTrimOp('slice', {})).toBeUndefined();
     expect(normalizeTrimOp('slice', { head: 5, tail: 5 })).toBeUndefined();
+  });
+});
+
+describe('Spine trim standalone (spine flag off)', () => {
+  const TRIM_ENV = 'KIMI_CODE_SPINE_TRIM';
+
+  beforeEach(() => {
+    vi.stubEnv(MASTER_ENV, '0');
+    vi.stubEnv(SPINE_ENV, '0');
+    vi.stubEnv(TRIM_ENV, '1');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('renders the trim projection over the plain history (no tree fold, no status)', () => {
+    const ctx = testAgent();
+    append(ctx, userMessage('start'));
+    append(ctx, assistantToolCall('c_big', 'Bash'));
+    append(ctx, bigToolResult('c_big', oversized('BIG-BODY')));
+    append(ctx, assistantText('done'));
+
+    // Upstream `materialize_trim_only_context`: every message is live range,
+    // so the projection is the plain history with trim labels rendered in.
+    const folded = fold(ctx);
+    expect(folded).toHaveLength(4);
+    expect(textOf(folded.find((m) => m.toolCallId === 'c_big'))).toBe(
+      `[TRIM_ID: trim_1]\n${oversized('BIG-BODY')}`,
+    );
+    expect(folded.some((m) => textOf(m).includes('<spine_node'))).toBe(false);
+    expect(folded.some((m) => textOf(m).includes('<spine_memory'))).toBe(false);
+    expect(folded.some((m) => textOf(m).includes('<spine_tran_status'))).toBe(false);
+  });
+
+  it('validates and renders trims with spine off', () => {
+    const ctx = testAgent();
+    append(ctx, userMessage('start'));
+    append(ctx, assistantToolCall('c_big', 'Bash'));
+    append(ctx, bigToolResult('c_big', oversized('BIG-BODY')));
+
+    const spine = ctx.get(IAgentSpineService);
+    expect(spine.acceptTrim('trim_1', { kind: 'snip' })).toEqual({ accepted: true });
+
+    append(ctx, trimCall('t1', { TRIM_ID: 'trim_1', op: 'snip' }));
+    append(ctx, trimAcceptedReceipt('t1'));
+
+    expect(textOf(fold(ctx).find((m) => m.toolCallId === 'c_big'))).toBe(
+      SPINE_TRIM_SNIPPED_PLACEHOLDER,
+    );
+  });
+
+  it('executes spine_trim end to end with spine off', async () => {
+    const ctx = testAgent();
+    append(ctx, userMessage('seed'));
+    append(ctx, assistantToolCall('c_big', 'Bash'));
+    append(ctx, bigToolResult('c_big', oversized('BIG-BODY')));
+    await configureLoop(ctx);
+    ctx.mockNextResponse(toolCallPart('t1', 'spine_trim', { TRIM_ID: 'trim_1', op: 'snip' }));
+    ctx.mockNextResponse({ type: 'text', text: 'trimmed' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'go' }] });
+    await ctx.untilTurnEnd();
+
+    // The tool registers on the trim flag alone and the accepted receipt
+    // lands in the stored history.
+    const receipt = ctx.context.get().find((m) => m.toolCallId === 't1');
+    expect(receipt?.isError).not.toBe(true);
+    expect(textOf(receipt)).toBe(TRIM_ACCEPTED_OUTPUT);
+    expect(textOf(fold(ctx).find((m) => m.toolCallId === 'c_big'))).toBe(
+      SPINE_TRIM_SNIPPED_PLACEHOLDER,
+    );
   });
 });
 
