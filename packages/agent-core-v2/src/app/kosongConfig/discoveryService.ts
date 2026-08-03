@@ -46,10 +46,11 @@ import {
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
 import { IOAuthService } from '#/app/auth/auth';
+import { AuthErrors } from '#/app/auth/errors';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IEventService } from '#/app/event/event';
 import { ModelCatalogErrors } from '#/kosong/model/errors';
-import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
 import { type ModelRecord } from '#/kosong/model/model';
 import {
   IProviderService,
@@ -90,7 +91,7 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
     @IConfigService private readonly config: IConfigService,
     @IOAuthService private readonly oauth: IOAuthService,
     @IEventService private readonly events: IEventService,
-    @IHostRequestHeaders private readonly hostRequestHeaders: IHostRequestHeaders,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
   ) {}
 
   refreshProviderModels(
@@ -181,7 +182,7 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
       removeProvider: (providerId) => this.shapeWithoutProvider(providerId),
       setConfig: (patch) => this.applyRefreshPatch(patch, exclusion),
       resolveOAuthToken: (providerName, oauthRef) => this.resolveOAuthToken(providerName, oauthRef),
-      userAgent: this.hostRequestHeaders.headers['User-Agent'],
+      userAgent: this.bootstrap.args.requestHeaders['User-Agent'],
     };
   }
 
@@ -282,7 +283,9 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
       oauthRef as unknown as OAuthRef | undefined,
     );
     if (tokenProvider === undefined) {
-      throw new Error('OAuth token provider is not configured.');
+      throw new Error2(AuthErrors.codes.AUTH_TOKEN_MISSING, 'OAuth token provider is not configured.', {
+        details: { provider_id: providerName },
+      });
     }
     return tokenProvider.getAccessToken();
   }

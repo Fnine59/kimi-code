@@ -1,13 +1,13 @@
 /**
  * `workspaceSkillCatalog` domain — explicit `ISkillSource` producer.
  *
- * Mirrors v1 SDK `skillDirs`: when runtime options provide `explicitDirs`, this
- * source contributes those directories as the user source, resolving relative
- * paths against the workspace root. When no explicit dirs are configured,
- * it yields nothing so default user / project discovery remains active. Watches
- * the explicit directories (existing or not) through a `SkillRootWatcher` and
- * re-fires `onDidChange` on debounced fs changes. Bound at Workspace scope so
- * every session of the handler shares one scan.
+ * Mirrors v1 SDK `skillDirs`: when the host invocation args provide
+ * `skillDirs`, this source contributes those directories as the user source,
+ * resolving relative paths against the workspace root. When no explicit dirs
+ * are configured, it yields nothing so default user / project discovery
+ * remains active. Watches the explicit directories (existing or not) through a
+ * `SkillRootWatcher` and re-fires `onDidChange` on debounced fs changes. Bound
+ * at Workspace scope so every session of the handler shares one scan.
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -16,7 +16,6 @@ import { Emitter, type Event } from '#/_base/event';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { resolveConfiguredSkillRoots } from '#/app/skillCatalog/skillRoots';
-import { ISkillCatalogRuntimeOptions } from '#/app/skillCatalog/skillCatalogRuntimeOptions';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { SkillRootWatcher } from '#/app/skillCatalog/skillRootWatch';
 import {
@@ -47,7 +46,6 @@ export class ExplicitFileSkillSource extends Disposable implements IExplicitFile
 
   constructor(
     @ISkillDiscovery private readonly discovery: ISkillDiscovery,
-    @ISkillCatalogRuntimeOptions private readonly runtimeOptions: ISkillCatalogRuntimeOptions,
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IHostFsWatchService hostFsWatch: IHostFsWatchService,
@@ -62,7 +60,7 @@ export class ExplicitFileSkillSource extends Disposable implements IExplicitFile
   }
 
   async load(signal?: AbortSignal): Promise<SkillContribution> {
-    const explicitDirs = this.runtimeOptions.explicitDirs ?? [];
+    const explicitDirs = this.bootstrap.args.skillDirs ?? [];
     if (explicitDirs.length === 0) {
       return { skills: [] };
     }
