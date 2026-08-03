@@ -154,7 +154,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       agentId,
       {
         extra: [
-          [IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope })],
+          [IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope, labels: opts.labels })],
           [ITelemetryService, this.telemetry.withContext({ agent_id: agentId })],
         ],
       },
@@ -207,7 +207,11 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     if (opts?.agentId !== undefined && this.handles.has(opts.agentId)) {
       throw new Error(`Agent "${opts.agentId}" already exists`);
     }
-    const child = await this.create({ agentId: opts?.agentId, forkedFrom: source.id });
+    const child = await this.create({
+      agentId: opts?.agentId,
+      forkedFrom: source.id,
+      labels: opts?.labels,
+    });
 
     const sourceData = source.accessor.get(IAgentProfileService).data();
     const childProfile = child.accessor.get(IAgentProfileService);

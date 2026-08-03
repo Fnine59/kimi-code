@@ -6,10 +6,10 @@
  * (memory assembly and tree move) — unless the same assistant response carries
  * another accepted control (or any `spine_spawn` call), in which case the
  * derivation applies none of them. Self-registers via
- * `registerAgentToolService` gated on the `KIMI_CODE_SPINE` flag and
- * `agentId === 'main'` (main-agent-only, like the goal tools);
- * `AgentToolActivationService` activates it into the main agent's tool
- * registry only, never a sub-agent's. Bound at Agent scope.
+ * `registerAgentToolService` gated on the `KIMI_CODE_SPINE` flag and the
+ * spine-control host gate (the main agent and spawned spine branches — see
+ * `./gate`); `AgentToolActivationService` activates it into those agents'
+ * tool registries only. Bound at Agent scope.
  */
 
 import { z } from 'zod';
@@ -19,12 +19,12 @@ import { toInputJsonSchema } from '#/tool/input-schema';
 import type { AgentTool, ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
-import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { SPINE_FLAG_ID } from '#/agent/spine/flag';
 import { IAgentSpineService, SPINE_TOOL_CLOSE } from '#/agent/spine/spine';
 import { IFlagService } from '#/app/flag/flag';
 import { toControlResult } from './controlResult';
 import { SPINE_CLOSE_DESCRIPTION, SPINE_NODE_MEMORY_DESCRIPTION } from './descriptions';
+import { isSpineControlHost } from './gate';
 
 export interface SpineCloseInput {
   readonly memory: string;
@@ -60,6 +60,5 @@ registerAgentToolService(ISpineCloseTool, SpineCloseTool, {
   name: SPINE_TOOL_CLOSE,
   domain: 'spine',
   when: (accessor) =>
-    accessor.get(IFlagService).enabled(SPINE_FLAG_ID) &&
-    accessor.get(IAgentScopeContext).agentId === 'main',
+    accessor.get(IFlagService).enabled(SPINE_FLAG_ID) && isSpineControlHost(accessor),
 });

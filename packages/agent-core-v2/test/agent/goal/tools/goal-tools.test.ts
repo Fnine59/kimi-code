@@ -438,6 +438,7 @@ describe('goal tool main-agent gating', () => {
     const scopeContext: IAgentScopeContext = {
       _serviceBrand: undefined,
       agentId,
+      labels: {},
       scope: () => '',
     };
     return { get: () => scopeContext } as unknown as ServicesAccessor;

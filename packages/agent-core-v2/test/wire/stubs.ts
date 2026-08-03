@@ -51,6 +51,7 @@ export function stubAgentScopeContext(scope: string): AgentScopeContext {
   return {
     _serviceBrand: undefined,
     agentId: 'test-agent',
+    labels: {},
     scope: (subKey?: string): string =>
       subKey === undefined || subKey === '' ? scope : `${scope}/${subKey}`,
   };

@@ -85,6 +85,7 @@ function createHarness(
       reg.defineInstance(IAgentScopeContext, {
         _serviceBrand: undefined,
         agentId: 'main',
+        labels: {},
         scope: (sub?: string): string => (sub ? `agents/main/${sub}` : 'agents/main'),
       } satisfies IAgentScopeContext);
       reg.defineInstance(IBootstrapService, {

@@ -158,7 +158,7 @@ const TASKS: SpineSpawnTaskInput[] = [
 ];
 
 describe('executeSpawnBranches', () => {
-  it('forks with trimTrailingToolCallBatch enabled', async () => {
+  it('forks with trimTrailingToolCallBatch enabled and the spine-branch label', async () => {
     const { lifecycle, subagentService, runCompletionControllers } = buildFakes(TASKS);
     const forkSpy = vi.spyOn(lifecycle, 'fork');
     const promise = executeSpawnBranches({ lifecycle, subagentService }, TASKS, makeSignal());
@@ -166,7 +166,10 @@ describe('executeSpawnBranches', () => {
     runCompletionControllers[1]!.resolve({ summary: 'memory B' });
     await promise;
     expect(forkSpy).toHaveBeenCalledTimes(2);
-    expect(forkSpy).toHaveBeenCalledWith('main', { trimTrailingToolCallBatch: true });
+    expect(forkSpy).toHaveBeenCalledWith('main', {
+      trimTrailingToolCallBatch: true,
+      labels: { spineBranch: 'true' },
+    });
   });
 
   it('wraps the task in the spawned-execution-branch envelope with the peer roster', () => {
@@ -176,7 +179,8 @@ describe('executeSpawnBranches', () => {
     expect(envelope).toContain('Peer branches in this spawn:\n- branch B');
     expect(envelope).not.toContain('- branch A');
     expect(envelope).toContain(
-      'The assignment is already an active branch scope. Begin the assigned work directly.',
+      'The assignment is already an active branch scope. Begin the assigned work directly. ' +
+        'Use spine_open, spine_close, and spine_next only to manage genuine descendant work within this assignment.',
     );
     expect(envelope).toContain(
       'Executable work is defined by the assignment. Inherited context supplies constraints and evidence for that work.',
@@ -186,6 +190,10 @@ describe('executeSpawnBranches', () => {
     );
     expect(envelope).toContain('`[branch A]`');
     expect(envelope).toContain('`@summary`');
+    expect(envelope).toContain(
+      'Treat each <spine_tran_status> update as task-tree parser telemetry for this branch session. ' +
+        'Across status updates, executable work remains defined by the assignment.',
+    );
     expect(envelope).toContain(
       'Complete this branch by returning exactly one non-empty, tool-free assistant final response containing terminal memory.',
     );

@@ -1685,6 +1685,7 @@ describe('AgentGoalService agent eligibility', () => {
       agentService(IAgentScopeContext, {
         _serviceBrand: undefined,
         agentId: 'sub-1',
+        labels: {},
         scope: (subKey?: string) =>
           subKey === undefined ? 'test/agents/sub-1' : `test/agents/sub-1/${subKey}`,
       }),

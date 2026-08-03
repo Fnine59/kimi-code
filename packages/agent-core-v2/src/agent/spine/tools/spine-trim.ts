@@ -9,7 +9,8 @@
  * (not exactly one of head / tail / anchor) rejects here with a retryable
  * reason, before any receipt exists. Self-registers via
  * `registerAgentToolService` gated on the `KIMI_CODE_SPINE_TRIM` flag and
- * `agentId === 'main'` (main-agent-only, like the other spine tools) — the
+ * `agentId === 'main'` (main-agent-only, unlike the branch-available control
+ * tools — see `./gate`) — the
  * spine flag is NOT required: trim runs standalone when the tree fold is off
  * (upstream `materialize_trim_only_context`). Bound at Agent scope.
  */

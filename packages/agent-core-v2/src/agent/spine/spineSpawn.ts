@@ -42,6 +42,7 @@ import type {
 } from '#/session/subagent/subagent';
 
 import type { SpineSpawnTaskInput } from './spine';
+import { SPINE_BRANCH_LABEL } from './tools/gate';
 
 export type SpawnBranchOutcome = 'completed' | 'errored' | 'aborted';
 
@@ -73,10 +74,12 @@ export const MIN_SPAWN_TASKS = 2;
 
 /**
  * Branch prompt contract, ported from the upstream "spawned execution branch"
- * envelope with two deliberate omissions: the `spine.open/close/next` sentence
- * (forked branch agents register no spine tools — spine tools are main-only)
- * and the `<spine_tran_status>` telemetry paragraph (a codex-specific channel
- * this engine does not emit).
+ * envelope. Tool names use this engine's flat `spine_open` / `spine_close` /
+ * `spine_next` spelling, and the `<spine_tran_status>` telemetry paragraph
+ * matches the status line this engine persists after applied transitions.
+ * Branch agents register only the three control tools (see `tools/gate.ts`) —
+ * `spine_spawn` / `spine_trim` / `spine_tree` stay main-only, so nested spawn
+ * is structurally disabled.
  */
 export function taskEnvelope(
   task: SpineSpawnTaskInput,
@@ -91,12 +94,14 @@ export function taskEnvelope(
   return (
     'You are a spawned execution branch. Your role is to complete exactly the assignment below and return bounded terminal memory to the spawning continuation.\n\n' +
     `You are: ${identity}\n\nPeer branches in this spawn:\n${peers}\n\n` +
-    'The assignment is already an active branch scope. Begin the assigned work directly.\n\n' +
+    'The assignment is already an active branch scope. Begin the assigned work directly. ' +
+    'Use spine_open, spine_close, and spine_next only to manage genuine descendant work within this assignment.\n\n' +
     'Executable work is defined by the assignment. Inherited context supplies constraints and evidence for that work.\n\n' +
     'Every branch has a duty to inspect the shared blackboard path declared in its assignment. Read it before substantive work and once more before returning your final response. If the file is absent, treat the blackboard as empty. Discussion is optional: if you need peer input or discover information useful to a peer, preserve existing messages and append a short note identified by ' +
     `\`[${identity}]\`; address peers as \`@summary\`. ` +
     'When a peer request is visible and helping is useful within your assignment, respond or account for it. If collaboration is unnecessary, do not write. Never wait for a reply, let blackboard activity expand the assignment, or treat the board as a source of correctness-critical state.\n\n' +
     'Other shared-workspace changes remain context for the assignment and do not add executable work. Production-file ownership and any integration responsibility remain exactly as declared in the assignment.\n\n' +
+    'Treat each <spine_tran_status> update as task-tree parser telemetry for this branch session. Across status updates, executable work remains defined by the assignment.\n\n' +
     'Complete this branch by returning exactly one non-empty, tool-free assistant final response containing terminal memory. After returning it, execution ends.\n\n' +
     `Assignment:\n${task.prompt}`
   );
@@ -173,6 +178,7 @@ async function startBranch(
 ): Promise<SpawnBranch> {
   const handle = await deps.lifecycle.fork('main', {
     trimTrailingToolCallBatch: true,
+    labels: { [SPINE_BRANCH_LABEL]: 'true' },
   });
   const run = await deps.subagentService.run(
     handle.id,

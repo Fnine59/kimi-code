@@ -40,6 +40,13 @@ export interface ForkAgentOptions {
   readonly agentId?: string;
   readonly binding?: Partial<BindAgentInput>;
   /**
+   * Identity labels recorded for the forked agent (persisted through
+   * `ISessionMetadata.registerAgent` and seeded into its `IAgentScopeContext`).
+   * Lets the creator mark the fork's kind — e.g. a spawned spine branch — so
+   * Agent-scoped consumers can recognize it.
+   */
+  readonly labels?: Readonly<Record<string, string>>;
+  /**
    * When true, trim the trailing assistant message that carries tool calls from
    * the copied context history before appending it to the forked agent. This
    * removes the in-flight tool-call carrier (e.g. `spine_spawn`) so the child

@@ -7,6 +7,7 @@ import {
   setUnexpectedErrorHandler,
 } from '#/_base/errors/unexpectedError';
 import { ACCEPTED_OUTPUT, toControlResult } from '#/agent/spine/tools/controlResult';
+import { SPINE_BRANCH_LABEL } from '#/agent/spine/tools/gate';
 import { SPINE_SPAWN_SECTION } from '#/agent/spine/configSection';
 import { SPINE_FLAG_ID } from '#/agent/spine/flag';
 import { SpineCloseTool } from '#/agent/spine/tools/spine-close';
@@ -893,11 +894,13 @@ describe('Spine durability', () => {
 
 });
 
-describe('spine control tool main-agent gating', () => {
-  const gatedTools = [
+describe('spine control tool host gating', () => {
+  const controlTools = [
     ['spine_open', SpineOpenTool],
     ['spine_close', SpineCloseTool],
     ['spine_next', SpineNextTool],
+  ] as const;
+  const mainOnlyTools = [
     ['spine_tree', SpineTreeTool],
     ['spine_trim', SpineTrimTool],
     ['spine_spawn', SpineSpawnTool],
@@ -907,10 +910,12 @@ describe('spine control tool main-agent gating', () => {
     agentId: string,
     flags: { spine: boolean; trim: boolean; spawn: boolean },
     maxThreads?: number,
+    labels: Record<string, string> = {},
   ): ServicesAccessor {
     const scopeContext: IAgentScopeContext = {
       _serviceBrand: undefined,
       agentId,
+      labels,
       scope: () => '',
     };
     const flagService = {
@@ -937,7 +942,26 @@ describe('spine control tool main-agent gating', () => {
     } as unknown as ServicesAccessor;
   }
 
-  it.each(gatedTools)('%s registers only on the main agent with the required flags', (name, ctor) => {
+  const branchLabels = { [SPINE_BRANCH_LABEL]: 'true' };
+
+  it.each(controlTools)('%s registers on the main agent and on spawned branches', (name, ctor) => {
+    const contribution = getAgentToolContributions().find((c) => c.ctor === ctor);
+    expect(contribution, `${name} contribution`).toBeDefined();
+    const when = contribution?.options.when;
+    expect(when, `${name} must gate on the spine flag + control-host identity`).toBeDefined();
+    expect(when?.(accessorFor('main', { spine: true, trim: false, spawn: false }))).toBe(true);
+    // Spawned execution branches (forked with SPINE_BRANCH_LABEL) get the
+    // control tools; ordinary sub-agents do not.
+    expect(when?.(accessorFor('sub-1', { spine: true, trim: false, spawn: false }))).toBe(false);
+    expect(
+      when?.(accessorFor('sub-1', { spine: true, trim: false, spawn: false }, undefined, branchLabels)),
+    ).toBe(true);
+    expect(
+      when?.(accessorFor('sub-1', { spine: false, trim: false, spawn: false }, undefined, branchLabels)),
+    ).toBe(false);
+  });
+
+  it.each(mainOnlyTools)('%s registers only on the main agent with the required flags', (name, ctor) => {
     const contribution = getAgentToolContributions().find((c) => c.ctor === ctor);
     expect(contribution, `${name} contribution`).toBeDefined();
     const when = contribution?.options.when;
@@ -946,6 +970,10 @@ describe('spine control tool main-agent gating', () => {
     const needsTrim = name === 'spine_trim';
     expect(when?.(accessorFor('main', { spine: true, trim: needsTrim, spawn: needsSpawn }))).toBe(true);
     expect(when?.(accessorFor('sub-1', { spine: true, trim: needsTrim, spawn: needsSpawn }))).toBe(false);
+    // Spawned branches do NOT get these tools — nested spawn stays disabled.
+    expect(
+      when?.(accessorFor('sub-1', { spine: true, trim: needsTrim, spawn: needsSpawn }, undefined, branchLabels)),
+    ).toBe(false);
     // spine_trim runs STANDALONE (upstream `materialize_trim_only_context`):
     // it needs only its own flag; every other spine tool requires the spine
     // flag itself.

@@ -1468,6 +1468,7 @@ export class AgentTestContext {
       reg.defineInstance(IAgentScopeContext, {
         _serviceBrand: undefined,
         agentId,
+        labels: {},
         scope: (subKey?: string): string =>
           subKey === undefined || subKey === '' ? agentScope : `${agentScope}/${subKey}`,
       });
