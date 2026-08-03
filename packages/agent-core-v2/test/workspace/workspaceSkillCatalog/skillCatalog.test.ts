@@ -57,7 +57,6 @@ import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { FileSkillDiscovery } from '#/app/skillCatalog/fileSkillDiscovery';
 import type { SkillRoot } from '#/app/skillCatalog/types';
 import { ILogService } from '#/_base/log/log';
-import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
 import { stubSkill } from '../../app/skillCatalog/stubs';
@@ -833,8 +832,9 @@ describe('WorkspaceSkillCatalogService', () => {
       await rm(homeDir, { recursive: true, force: true });
     }
   });
-  it('rescans the workspace-root source when a project skill file changes on disk', async () => {
+  it('rescans the workspace-root source when its fs-watch boundary reports a project skill file change', async () => {
     const workDir = await mkdtemp(join(tmpdir(), 'skill-watch-'));
+    const watch = stubHostFsWatch();
     const host = createScopedTestHost([
       stubPair(IBootstrapService, bootstrapStub),
       stubPair(IConfigService, configStub()),
@@ -845,7 +845,7 @@ describe('WorkspaceSkillCatalogService', () => {
       stubPair(ILogService, stubLog()),
       stubPair(ISkillDiscovery, new FileSkillDiscovery(stubLog())),
       stubPair(IHostFileSystem, watchHostFs()),
-      stubPair(IHostFsWatchService, new HostFsWatchService()),
+      stubPair(IHostFsWatchService, watch),
     ]);
     const workspace = host.child(LifecycleScope.Workspace, 'w1', [
       stubPair(IWorkspaceContext, workspaceContextStub(workDir)),
@@ -858,21 +858,21 @@ describe('WorkspaceSkillCatalogService', () => {
 
       const refreshed = new Promise<string>((resolvePromise) => {
         const d = catalog.onDidChange((sourceId) => {
+          if (sourceId !== 'workspace') return;
           d.dispose();
           resolvePromise(sourceId);
         });
       });
-      const timedOut = new Promise<never>((_resolve, reject) => {
-        setTimeout(() => reject(new Error('watch-driven refresh timed out')), 10000);
-      });
+      const skillFile = join(workDir, '.agents', 'skills', 'watched-skill', 'SKILL.md');
       await mkdir(join(workDir, '.agents', 'skills', 'watched-skill'), { recursive: true });
       await writeFile(
-        join(workDir, '.agents', 'skills', 'watched-skill', 'SKILL.md'),
+        skillFile,
         '---\nname: watched-skill\ndescription: from watch\n---\nbody',
         'utf8',
       );
+      watch.fire(skillFile, { action: 'created' });
 
-      await expect(Promise.race([refreshed, timedOut])).resolves.toBe('workspace');
+      await expect(refreshed).resolves.toBe('workspace');
       expect(catalog.catalog.getSkill('watched-skill')?.description).toBe('from watch');
     } finally {
       host.dispose();

@@ -5,7 +5,8 @@
  * re-rendered at profile (re)bind and after compaction, so a session that runs
  * past midnight keeps a stale date; this provider appends a system-reminder at
  * the next step boundary instead. The provider runs only while the profile's
- * rendered snapshot exists and matches the live cwd. The baseline prefers the
+ * rendered snapshot exists and matches the live cwd, and reads current time
+ * through the App-scoped `hostClock`. The baseline prefers the
  * typed disclosure on the newest surviving `date_change` injection, then the
  * persisted rendered snapshot, then a runtime seed kept in `agentState`: a
  * profile whose snapshot declares no date disclosure is seeded with the first
@@ -27,6 +28,7 @@ import {
 } from '#/agent/contextInjector/disclosureBaseline';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IHostClock } from '#/os/interface/hostClock';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import { IAgentDateChangeService } from './dateChange';
@@ -45,6 +47,7 @@ export class AgentDateChangeService extends Disposable implements IAgentDateChan
     @IAgentContextInjectorService dynamicInjector: IAgentContextInjectorService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IHostClock private readonly clock: IHostClock,
     @ISessionContext private readonly sessionContext: ISessionContext,
   ) {
     super();
@@ -60,7 +63,7 @@ export class AgentDateChangeService extends Disposable implements IAgentDateChan
     const profileData = this.profile.data();
     if (profileData.environmentDisclosure?.cwd !== this.sessionContext.cwd) return undefined;
     const renderGeneration = profileData.renderGeneration ?? 0;
-    const current = currentDateDisclosure();
+    const current = currentDateDisclosure(this.clock);
     const baseline = pickDisclosureBaseline<DateDisclosure>(
       disclosureOfKind(lastDisclosure, 'date'),
       this.dateFromProfile(),
@@ -100,14 +103,20 @@ interface DateDisclosure {
   readonly renderGeneration: number;
 }
 
-function currentDateDisclosure(): Omit<DateDisclosure, 'renderGeneration'> {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
+function currentDateDisclosure(clock: IHostClock): Omit<DateDisclosure, 'renderGeneration'> {
+  const date = clock.now();
+  const timeZone = clock.timeZone();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((candidate) => candidate.type === type)?.value ?? '';
   return {
-    localDate: `${year}-${month}-${day}`,
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    localDate: `${part('year')}-${part('month')}-${part('day')}`,
+    timeZone,
   };
 }
 

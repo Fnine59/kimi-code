@@ -1,10 +1,11 @@
 /**
  * Scenario: `SkillRootWatcher` candidate arming.
  *
- * Existing candidates get a recursive watch on their realpath, missing ones a
- * shallow watch on the nearest existing ancestor that re-arms as the chain
- * materializes; events are debounced into one callback and pruned to the
- * discovery traversal policy. Uses the shared `stubHostFsWatch` fake.
+ * Existing candidates get a depth-bounded recursive watch on their realpath,
+ * nested symlink bundles are followed, and symlinked roots retain a lexical
+ * anchor for deletion and retargeting. Missing candidates re-arm along their
+ * lexical and last-known target chains. Uses the shared `stubHostFsWatch`
+ * fake.
  * Run: `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
  * test/app/skillCatalog/skillRootWatch.test.ts`.
  */
@@ -17,23 +18,48 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { stubHostFsWatch } from '../../os/stubs';
 import { createFakeHostFs } from '../../tools/fixtures/fake-exec';
 
-function fakeHostFs(existingDirs: Set<string>): IHostFileSystem {
+function fakeHostFs(
+  existingDirs: Set<string>,
+  symlinkTargets: Map<string, string>,
+): IHostFileSystem {
   return createFakeHostFs({
     stat: async (path) => {
-      if (!existingDirs.has(path)) {
+      const target = symlinkTargets.get(path) ?? path;
+      if (!existingDirs.has(target)) {
         const err = new Error(`ENOENT: ${path}`) as NodeJS.ErrnoException;
         err.code = 'ENOENT';
         throw err;
       }
       return { isFile: false, isDirectory: true, size: 0 };
     },
-    realpath: async (path) => path,
+    lstat: async (path) => {
+      if (!symlinkTargets.has(path) && !existingDirs.has(path)) {
+        const err = new Error(`ENOENT: ${path}`) as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return {
+        isFile: false,
+        isDirectory: !symlinkTargets.has(path),
+        isSymbolicLink: symlinkTargets.has(path),
+        size: 0,
+      };
+    },
+    realpath: async (path) => symlinkTargets.get(path) ?? path,
   });
 }
 
-function makeWatcher(existingDirs: Set<string>, onChanged: () => void) {
+function makeWatcher(
+  existingDirs: Set<string>,
+  onChanged: () => void,
+  symlinkTargets = new Map<string, string>(),
+) {
   const watch = stubHostFsWatch();
-  const watcher = new SkillRootWatcher(watch, fakeHostFs(existingDirs), onChanged);
+  const watcher = new SkillRootWatcher(
+    watch,
+    fakeHostFs(existingDirs, symlinkTargets),
+    onChanged,
+  );
   return { watch, watcher };
 }
 
@@ -55,7 +81,15 @@ describe('SkillRootWatcher', () => {
       await watcher.setPaths(['/home/skills']);
 
       expect(watch.watchedEntries()).toEqual([
-        { path: '/home/skills', options: { recursive: true, ignored: expect.any(Function) } },
+        {
+          path: '/home/skills',
+          options: {
+            recursive: true,
+            followSymlinks: true,
+            depth: 8,
+            ignored: expect.any(Function),
+          },
+        },
       ]);
 
       watch.fire('/home/skills/added/SKILL.md', { action: 'created' });
@@ -78,7 +112,7 @@ describe('SkillRootWatcher', () => {
       await watcher.setPaths(['/home/.agents/skills']);
 
       expect(watch.watchedEntries()).toEqual([
-        { path: '/home', options: { recursive: false } },
+        { path: '/home', options: { recursive: false, ignored: expect.any(Function) } },
       ]);
 
       // A parent directory appearing only moves the anchor closer — no reload yet.
@@ -94,7 +128,15 @@ describe('SkillRootWatcher', () => {
       await vi.advanceTimersByTimeAsync(300);
       expect(fired).toBe(1);
       expect(watch.watchedEntries()).toEqual([
-        { path: '/home/.agents/skills', options: { recursive: true, ignored: expect.any(Function) } },
+        {
+          path: '/home/.agents/skills',
+          options: {
+            recursive: true,
+            followSymlinks: true,
+            depth: 8,
+            ignored: expect.any(Function),
+          },
+        },
       ]);
     } finally {
       watcher.dispose();
@@ -115,7 +157,9 @@ describe('SkillRootWatcher', () => {
       watch.fire('/repo/skills', { action: 'deleted', kind: 'directory' });
       await vi.advanceTimersByTimeAsync(300);
       expect(fired).toBe(1);
-      expect(watch.watchedEntries()).toEqual([{ path: '/repo', options: { recursive: false } }]);
+      expect(watch.watchedEntries()).toEqual([
+        { path: '/repo', options: { recursive: false, ignored: expect.any(Function) } },
+      ]);
 
       existing.add('/repo/skills');
       watch.fire('/repo/skills', { action: 'created', kind: 'directory' });
@@ -144,6 +188,93 @@ describe('SkillRootWatcher', () => {
       watch.fire('/home/skills/regular/SKILL.md', { action: 'created' });
       await vi.advanceTimersByTimeAsync(300);
       expect(fired).toBe(1);
+    } finally {
+      watcher.dispose();
+    }
+  });
+
+  it('watches a symlinked root target recursively and its lexical parent shallowly', async () => {
+    const existing = new Set(['/repo', '/targets/a']);
+    const symlinkTargets = new Map([['/repo/skills', '/targets/a']]);
+    const { watch, watcher } = makeWatcher(existing, () => {}, symlinkTargets);
+    try {
+      await watcher.setPaths(['/repo/skills']);
+
+      expect(watch.watchedEntries()).toEqual([
+        {
+          path: '/targets/a',
+          options: {
+            recursive: true,
+            followSymlinks: true,
+            depth: 8,
+            ignored: expect.any(Function),
+          },
+        },
+        {
+          path: '/repo',
+          options: { recursive: false, ignored: expect.any(Function) },
+        },
+      ]);
+    } finally {
+      watcher.dispose();
+    }
+  });
+
+  it('rebinds the recursive target when a symlinked root is retargeted', async () => {
+    const existing = new Set(['/repo', '/targets/a', '/targets/b']);
+    const symlinkTargets = new Map([['/repo/skills', '/targets/a']]);
+    let fired = 0;
+    const { watch, watcher } = makeWatcher(
+      existing,
+      () => {
+        fired += 1;
+      },
+      symlinkTargets,
+    );
+    try {
+      await watcher.setPaths(['/repo/skills']);
+      symlinkTargets.set('/repo/skills', '/targets/b');
+
+      watch.fire('/repo/skills', { action: 'modified', kind: 'file' });
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(fired).toBe(1);
+      expect(watch.watchedPaths().toSorted()).toEqual(['/repo', '/targets/b']);
+      watch.fire('/targets/a/SKILL.md', { action: 'modified' });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(fired).toBe(1);
+    } finally {
+      watcher.dispose();
+    }
+  });
+
+  it('re-arms a deleted symlink target from its target and lexical ancestors', async () => {
+    const existing = new Set(['/repo', '/targets', '/targets/a']);
+    const symlinkTargets = new Map([['/repo/skills', '/targets/a']]);
+    let fired = 0;
+    const { watch, watcher } = makeWatcher(
+      existing,
+      () => {
+        fired += 1;
+      },
+      symlinkTargets,
+    );
+    try {
+      await watcher.setPaths(['/repo/skills']);
+      existing.delete('/targets/a');
+
+      watch.fire('/targets/a', { action: 'deleted', kind: 'directory' });
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(fired).toBe(1);
+      expect(watch.watchedPaths().toSorted()).toEqual(['/repo', '/targets']);
+
+      existing.add('/targets/a');
+      watch.fire('/targets/a', { action: 'created', kind: 'directory' });
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(fired).toBe(2);
+      expect(watch.watchedPaths().toSorted()).toEqual(['/repo', '/targets/a']);
     } finally {
       watcher.dispose();
     }

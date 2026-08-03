@@ -1,51 +1,50 @@
 /**
  * Scenario: `date_change` context injection announces calendar-date changes.
  *
- * Exercises the real provider through the harness injector: baselines come
- * from typed reminder metadata, then the persisted rendered-date snapshot,
- * then a runtime seed recorded on first observation for prompts that never
- * disclose a date. Run: `pnpm --filter
+ * Exercises the real provider through the harness injector with `hostClock`
+ * stubbed at the host boundary: baselines come from typed reminder metadata,
+ * then the persisted rendered-date snapshot, then a runtime seed recorded on
+ * first observation for prompts that never disclose a date. Run: `pnpm --filter
  * @moonshot-ai/agent-core-v2 exec vitest run
  * test/agent/dateChange/dateChangeInjection.test.ts`.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import type { EnvironmentDisclosureSnapshot } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { IHostClock } from '#/os/interface/hostClock';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
 import {
+  appService,
   createTestAgent,
   InMemoryWireRecordPersistence,
   type TestAgentContext,
 } from '../../harness';
 import { runWillBeginStepHooks } from '../loop/stubs';
 
-function localDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
+const TEST_TIME_ZONE = 'Asia/Shanghai';
+const INITIAL_INSTANT = '2026-07-29T04:00:00.000Z';
+
+interface TestHostClock extends IHostClock {
+  set(iso: string): void;
 }
 
-describe('AgentDateChangeService', () => {
-  let ctx: TestAgentContext;
-  let context: IAgentContextMemoryService;
-  let loop: IAgentLoopService;
-  let profile: IAgentProfileService;
-
-  beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date(2026, 6, 29, 12));
-    ctx = createTestAgent();
-    context = ctx.get(IAgentContextMemoryService);
-    loop = ctx.get(IAgentLoopService);
-    profile = ctx.get(IAgentProfileService);
-  });
+function testHostClock(initialIso: string): TestHostClock {
+  let current = new Date(initialIso);
+  return {
+    _serviceBrand: undefined,
+    now: () => new Date(current),
+    timeZone: () => TEST_TIME_ZONE,
+    set: (iso) => {
+      current = new Date(iso);
+    },
+  };
+}
 
 function systemPromptWithDate(iso: string): string {
   return [
@@ -59,16 +58,16 @@ function updateSystemPromptWithDate(
   profile: IAgentProfileService,
   cwd: string,
   iso: string,
+  localDate: string,
   renderGeneration?: number,
 ): void {
-  const date = new Date(iso);
   const environment: EnvironmentDisclosureSnapshot = {
     cwd,
     date: {
       disclosed: true,
       value: {
-        localDate: localDateKey(date),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        localDate,
+        timeZone: TEST_TIME_ZONE,
       },
     },
   };
@@ -102,20 +101,36 @@ function messageText(message: ContextMessage): string {
     .join('');
 }
 
+describe('AgentDateChangeService', () => {
+  let ctx: TestAgentContext;
+  let context: IAgentContextMemoryService;
+  let clock: TestHostClock;
+  let loop: IAgentLoopService;
+  let profile: IAgentProfileService;
+
+  beforeEach(() => {
+    clock = testHostClock(INITIAL_INSTANT);
+    ctx = createTestAgent(appService(IHostClock, clock));
+    context = ctx.get(IAgentContextMemoryService);
+    loop = ctx.get(IAgentLoopService);
+    profile = ctx.get(IAgentProfileService);
+  });
+
   afterEach(async () => {
     try {
-      try {
-        await ctx.expectResumeMatches();
-      } finally {
-        await ctx.dispose();
-      }
+      await ctx.expectResumeMatches();
     } finally {
-      vi.useRealTimers();
+      await ctx.dispose();
     }
   });
 
   it('does not inject when the system prompt date is today', async () => {
-    updateSystemPromptWithDate(profile, ctx.get(ISessionContext).cwd, new Date().toISOString());
+    updateSystemPromptWithDate(
+      profile,
+      ctx.get(ISessionContext).cwd,
+      INITIAL_INSTANT,
+      '2026-07-29',
+    );
 
     await runWillBeginStepHooks(loop);
 
@@ -123,9 +138,12 @@ function messageText(message: ContextMessage): string {
   });
 
   it('injects once when the rendered date is stale, then stays quiet', async () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    updateSystemPromptWithDate(profile, ctx.get(ISessionContext).cwd, yesterday.toISOString());
+    updateSystemPromptWithDate(
+      profile,
+      ctx.get(ISessionContext).cwd,
+      '2026-07-28T04:00:00.000Z',
+      '2026-07-28',
+    );
 
     await runWillBeginStepHooks(loop);
 
@@ -134,7 +152,7 @@ function messageText(message: ContextMessage): string {
     const first = reminders[0];
     expect(first).toBeDefined();
     const text = messageText(first as ContextMessage);
-    expect(text).toContain(`Today's date is now ${localDateKey(new Date())}`);
+    expect(text).toContain("Today's date is now 2026-07-29");
     expect(text).toContain('stale');
     expect(text).toContain('DO NOT mention this to the user explicitly');
     expect(first?.origin).toMatchObject({
@@ -143,7 +161,8 @@ function messageText(message: ContextMessage): string {
       disclosure: {
         kind: 'date',
         renderGeneration: 2,
-        localDate: localDateKey(new Date()),
+        localDate: '2026-07-29',
+        timeZone: TEST_TIME_ZONE,
       },
     });
 
@@ -152,10 +171,15 @@ function messageText(message: ContextMessage): string {
   });
 
   it('announces each date crossed by a long-lived session', async () => {
-    updateSystemPromptWithDate(profile, ctx.get(ISessionContext).cwd, new Date().toISOString());
+    updateSystemPromptWithDate(
+      profile,
+      ctx.get(ISessionContext).cwd,
+      INITIAL_INSTANT,
+      '2026-07-29',
+    );
     await runWillBeginStepHooks(loop);
 
-    vi.setSystemTime(new Date(2026, 6, 30, 12));
+    clock.set('2026-07-30T04:00:00.000Z');
     await runWillBeginStepHooks(loop);
 
     let reminders = dateReminders(context);
@@ -164,7 +188,7 @@ function messageText(message: ContextMessage): string {
       "Today's date is now 2026-07-30",
     );
 
-    vi.setSystemTime(new Date(2026, 6, 31, 12));
+    clock.set('2026-07-31T04:00:00.000Z');
     await runWillBeginStepHooks(loop);
 
     reminders = dateReminders(context);
@@ -184,14 +208,22 @@ function messageText(message: ContextMessage): string {
   it('injects on the first step when a persisted prompt crosses midnight before resume', async () => {
     const persistence = new InMemoryWireRecordPersistence();
     await ctx.dispose();
-    ctx = createTestAgent({ persistence });
+    ctx = createTestAgent({ persistence }, appService(IHostClock, clock));
     profile = ctx.get(IAgentProfileService);
-    updateSystemPromptWithDate(profile, ctx.get(ISessionContext).cwd, new Date().toISOString());
+    updateSystemPromptWithDate(
+      profile,
+      ctx.get(ISessionContext).cwd,
+      INITIAL_INSTANT,
+      '2026-07-29',
+    );
     await ctx.wire.flush();
     await ctx.dispose();
 
-    vi.setSystemTime(new Date(2026, 6, 30, 12));
-    ctx = createTestAgent({ autoConfigure: false, persistence });
+    clock.set('2026-07-30T04:00:00.000Z');
+    ctx = createTestAgent(
+      { autoConfigure: false, persistence },
+      appService(IHostClock, clock),
+    );
     context = ctx.get(IAgentContextMemoryService);
     loop = ctx.get(IAgentLoopService);
     await ctx.restorePersisted();
@@ -206,9 +238,13 @@ function messageText(message: ContextMessage): string {
   });
 
   it('uses the newer persisted render snapshot over older reminder metadata', async () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    updateSystemPromptWithDate(profile, ctx.get(ISessionContext).cwd, yesterday.toISOString(), 2);
+    updateSystemPromptWithDate(
+      profile,
+      ctx.get(ISessionContext).cwd,
+      '2026-07-28T04:00:00.000Z',
+      '2026-07-28',
+      2,
+    );
     context.append({
       role: 'user',
       content: [{ type: 'text', text: 'older date reminder' }],
@@ -219,8 +255,8 @@ function messageText(message: ContextMessage): string {
         disclosure: {
           kind: 'date',
           renderGeneration: 1,
-          localDate: localDateKey(new Date()),
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+          localDate: '2026-07-29',
+          timeZone: TEST_TIME_ZONE,
         },
       },
     });
@@ -233,15 +269,18 @@ function messageText(message: ContextMessage): string {
       disclosure: {
         kind: 'date',
         renderGeneration: 2,
-        localDate: localDateKey(new Date()),
+        localDate: '2026-07-29',
       },
     });
   });
 
   it('re-injects after undo removes the structured reminder metadata', async () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    updateSystemPromptWithDate(profile, ctx.get(ISessionContext).cwd, yesterday.toISOString());
+    updateSystemPromptWithDate(
+      profile,
+      ctx.get(ISessionContext).cwd,
+      '2026-07-28T04:00:00.000Z',
+      '2026-07-28',
+    );
     context.append({
       role: 'user',
       content: [{ type: 'text', text: 'first turn' }],
@@ -279,7 +318,7 @@ function messageText(message: ContextMessage): string {
     await runWillBeginStepHooks(loop);
     expect(dateReminders(context)).toHaveLength(0);
 
-    vi.setSystemTime(new Date(2026, 6, 30, 12));
+    clock.set('2026-07-30T04:00:00.000Z');
     await runWillBeginStepHooks(loop);
 
     const reminders = dateReminders(context);
