@@ -10,8 +10,8 @@ This page documents the changes in each Kimi Code CLI release.
 
 ### Features
 
-- Add four hook events: `TurnStarted`, `UserPromptQueued`, `TaskStarted`, and `SessionHeartbeat`. Configure them under `[[hooks]]` in `config.toml` — see [Hooks](../customization/hooks.md) for details.
-- Add a `[token_counting]` config section to choose which token count the context-size display shows (`measured+estimated`, `measured`, or `estimated`); useful for providers that do not report token usage. Set `strategy` under `[token_counting]` in `config.toml` to switch.
+- Add four hook events: `TurnStarted`, `UserPromptQueued`, `TaskStarted`, and `SessionHeartbeat`; `SessionEnd` now also reports `archive` when a session is archived instead of exited. Configure the events under `[[hooks]]` in `config.toml` — see [Hooks](../customization/hooks.md) for details.
+- Add a `[token_counting]` config section to choose which token count the context-size display shows (`measured+estimated`, `measured`, or `estimated`); useful for providers that do not report token usage. Set `strategy` under `[token_counting]` in `config.toml` (or `KIMI_TOKEN_COUNTING_STRATEGY`) to switch.
 
 ### Polish
 

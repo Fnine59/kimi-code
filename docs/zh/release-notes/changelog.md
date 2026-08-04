@@ -10,8 +10,8 @@ outline: 2
 
 ### 新功能
 
-- 新增 `TurnStarted`、`UserPromptQueued`、`TaskStarted` 和 `SessionHeartbeat` 四个 hook 事件，在 `config.toml` 的 `[[hooks]]` 下配置，详见 [Hooks](../customization/hooks.md)。
-- 新增 `[token_counting]` 配置节，可选择上下文大小显示使用的 token 计数来源（`measured+estimated`、`measured` 或 `estimated`），适用于不上报用量的供应商。在 `config.toml` 的 `[token_counting]` 下设置 `strategy` 即可切换。
+- 新增 `TurnStarted`、`UserPromptQueued`、`TaskStarted` 和 `SessionHeartbeat` 四个 hook 事件；会话被归档（而非退出）时 `SessionEnd` 现上报为 `archive`。在 `config.toml` 的 `[[hooks]]` 下配置，详见 [Hooks](../customization/hooks.md)。
+- 新增 `[token_counting]` 配置节，可选择上下文大小显示使用的 token 计数来源（`measured+estimated`、`measured` 或 `estimated`），适用于不上报用量的供应商。在 `config.toml` 的 `[token_counting]` 下设置 `strategy`（或使用 `KIMI_TOKEN_COUNTING_STRATEGY`）即可切换。
 
 ### 优化
 
