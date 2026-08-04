@@ -11,11 +11,11 @@ This page documents the changes in each Kimi Code CLI release.
 ### Features
 
 - Add four hook events: `TurnStarted`, `UserPromptQueued`, `TaskStarted`, and `SessionHeartbeat`; `SessionEnd` now also reports `archive` when a session is archived instead of exited. Configure the events under `[[hooks]]` in `config.toml` — see [Hooks](../customization/hooks.md) for details.
-- Add a `[token_counting]` config section to choose which token count the context-size display shows (`measured+estimated`, `measured`, or `estimated`); useful for providers that do not report token usage. Set `strategy` under `[token_counting]` in `config.toml` (or `KIMI_TOKEN_COUNTING_STRATEGY`) to switch.
 
 ### Polish
 
 - Rename `[loop_control] max_retries_per_step` to `max_attempts_per_step`, and `max_steps_per_run` to `max_steps_per_turn`. The old keys no longer take effect and a startup warning prompts the rename in `config.toml`; the `KIMI_LOOP_MAX_RETRIES_PER_STEP` env var is deprecated in favor of `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP` but still works with a warning.
+- Add a `[token_counting]` config section to choose which token count the context-size display shows (`measured+estimated`, `measured`, or `estimated`); useful for providers that do not report token usage. Set `strategy` under `[token_counting]` in `config.toml` (or `KIMI_TOKEN_COUNTING_STRATEGY`) to switch.
 
 ### Bug Fixes
 

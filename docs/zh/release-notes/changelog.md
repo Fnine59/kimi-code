@@ -11,11 +11,11 @@ outline: 2
 ### 新功能
 
 - 新增 `TurnStarted`、`UserPromptQueued`、`TaskStarted` 和 `SessionHeartbeat` 四个 hook 事件；会话被归档（而非退出）时 `SessionEnd` 现上报为 `archive`。在 `config.toml` 的 `[[hooks]]` 下配置，详见 [Hooks](../customization/hooks.md)。
-- 新增 `[token_counting]` 配置节，可选择上下文大小显示使用的 token 计数来源（`measured+estimated`、`measured` 或 `estimated`），适用于不上报用量的供应商。在 `config.toml` 的 `[token_counting]` 下设置 `strategy`（或使用 `KIMI_TOKEN_COUNTING_STRATEGY`）即可切换。
 
 ### 优化
 
 - 重命名 `[loop_control]` 配置键：`max_retries_per_step` 改为 `max_attempts_per_step`，`max_steps_per_run` 改为 `max_steps_per_turn`。旧键不再生效，启动时会警告提示改名；`KIMI_LOOP_MAX_RETRIES_PER_STEP` 环境变量已弃用，请改用 `KIMI_LOOP_MAX_ATTEMPTS_PER_STEP`，旧变量仍有效但会给出警告。
+- 新增 `[token_counting]` 配置节，可选择上下文大小显示使用的 token 计数来源（`measured+estimated`、`measured` 或 `estimated`），适用于不上报用量的供应商。在 `config.toml` 的 `[token_counting]` 下设置 `strategy`（或使用 `KIMI_TOKEN_COUNTING_STRATEGY`）即可切换。
 
 ### 修复
 
