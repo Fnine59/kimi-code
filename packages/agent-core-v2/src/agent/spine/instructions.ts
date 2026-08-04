@@ -3,9 +3,16 @@
  * system prompt when spine is enabled, plus the `appendSpineView` splicer and
  * the `~/spine_instruction.md` override loader.
  *
- * The text is transcribed from the upstream protocol (with the `spine.trim`
- * guidance removed, since trim is not implemented in this milestone) so the
- * model sees an identical contract. `loadSpineViewOverride` returns the
+ * The text is transcribed from the upstream `SPINE_JIT_INSTRUCTIONS`
+ * (codex-rs/core/src/spine/instructions.rs, context-ownership rewrite through
+ * 97f4eb1a) so the model sees an identical contract, with three local
+ * adaptations: the control tools keep their local `spine_open` / `spine_next`
+ * / `spine_close` spellings (upstream writes bare `open` / `next` / `close`);
+ * the code-mode `exec` batching clause is dropped (no code mode in this
+ * repo); and no trim segment is appended because upstream's
+ * `SPINE_TRIM_INSTRUCTIONS` is intentionally empty pending approved copy —
+ * trim semantics live in the `spine_trim` tool description.
+ * `loadSpineViewOverride` returns the
  * `<spine_view>` block extracted from `~/spine_instruction.md` (`undefined`
  * when the file is missing, unreadable, empty, or carries no block); the
  * caller owns the result — there is no module-level cache, so co-resident
@@ -16,94 +23,90 @@
  */
 
 export const SPINE_VIEW = `<spine_view>
-All work must be Spine-managed to make every test-time step produce efficient,
-explicit task progress: the Spine tree enables scaling by recursively
-decomposing tasks into scoped nodes and merging them through compact
-continuation memory, while just-in-time context compilation turns each node's
-local working context into that memory to keep scaling cost-efficient.
+All work must be Spine-managed. Structure the tree around context ownership and
+lifecycle. Keep each body of working context in the lowest node whose scope
+spans all work that needs its exact detail. Once remaining work can continue
+from compact continuation memory, let that memory replace the full detail.
+Keep routine bounded work lightweight, while allowing difficult or open-ended
+work to autonomously scale test-time compute toward the best attainable
+outcome.
 
-Use Spine as a recursive task-boundary workflow. The Spine tree is the semantic
-scope structure for task decomposition and context compilation. Preserve node
-hierarchy carefully: every transition must route work to its correct child,
-sibling, parent, or ancestor scope.
+Recursive policy:
 
-1. Start task work with \`spine_open(<concrete task goal>)\` under the startup node.
-2. At every node, maintain orientation to the big picture: the current node, its
-   parent goal, its role in the parent decomposition, completed siblings,
-   remaining siblings, and where the next work belongs.
-3. If the current node is unclear, too broad, or not concrete enough to verify,
-   use \`spine_open(<concrete child goal for exploration, planning, or decomposition>)\`
-   only when that goal is a true child of the current node. Use the child to
-   gather evidence, clarify constraints, plan, or decompose the work. Repeat
-   recursively until the next work can be executed in a focused, specific,
-   verifiable leaf node.
-4. When an exploration/planning/decomposition node is complete, use
-   \`spine_next(<concrete sibling goal>, memory)\` if the next work is a true sibling
-   under the same parent. Use \`spine_close(memory)\` if the distilled result should
-   return to the parent before deciding the next node.
-5. Use \`spine_next(<concrete sibling goal>, memory)\` for remaining sibling work under
-   the same parent. \`spine_next\` finalizes the current node and continues in a fresh
-   sibling with distilled continuation memory.
-6. Use \`spine_close(memory)\` when the current task node is complete enough for its
-   parent or later siblings to continue correctly. \`spine_close\` is the upward merge
-   operation: it returns compact state to the parent, not the local trace. If
-   the next work belongs to an ancestor's scope, close upward until the correct
-   parent scope is reached, then continue with \`spine_next\` or \`spine_open\`.
+Begin every top-level task with \`spine_open(summary)\` while the current root
+epoch is live. Root epochs are synthetic containers and cannot be closed. The
+\`summary\` argument to every \`spine_open\` or \`spine_next\` call must
+concisely identify the node's concrete scope and intended outcome.
 
-Optimize the tree for correct progress per unit of working context. Node summaries
-should name concrete goals. Node memory should be the minimal sufficient context
-needed for correct continuation.
+Then solve each node recursively. Derive node boundaries from context ownership
+and lifecycle. Keep work in one node only while its required working context
+shares a common ownership scope and lifecycle. If achieving one outcome spans
+multiple independently compactable bodies of local context, decompose the
+associated work along those ownership and lifecycle boundaries into direct
+children, even when all of it serves the same semantic outcome.
 
-Hierarchy and placement rules:
+A useful child owns a concrete, independently meaningful body of work and the
+local working context needed to complete it. That context must have an
+independent lifecycle: its exact detail can become unnecessary to remaining
+work once the child's result is stable and its compact memory preserves the
+state required for continuation. A useful decomposition may consist of a single
+exploratory child when resolving or bounding a focused uncertainty will
+accumulate such independently compactable local detail.
 
-* Before any \`spine_open\`, \`spine_next\`, or \`spine_close\`, identify the current node's parent goal,
-  the current node's role in that parent, and whether the next work belongs to
-  the current node, the same parent, or an ancestor scope.
-* Use \`spine_open\` only when the new goal is truly a child of the current node.
-* Use \`spine_next\` only when the new goal is truly a sibling under the same parent.
-* Use \`spine_close\` when the remaining work belongs to the parent or to an ancestor's
-  scope; if necessary, close upward before continuing.
-* If multiple ancestor levels must be exited, close one level per assistant
-  response until the correct scope is reached.
-* Every \`spine_next\` or \`spine_close\` memory must preserve compact big-picture state:
-  current position, parent goal, completed siblings, remaining siblings, key
-  decisions/evidence, unresolved risks, and why the transition is
-  child/sibling/parent/ancestor-level.
+Keep the minimum context whose exact detail is needed by multiple branches in
+their lowest common ancestor for as long as those branches need it. Keep context
+needed by only one branch in the child that owns that work. A child boundary is
+useful only when compact memory lets remaining work continue without broadly
+reconstructing the child's working context. Avoid node boundaries that cause
+repeated reloads of unchanged working context or fragment one ownership and
+lifecycle scope without enabling independent compaction.
 
-Conventions:
-* A single assistant response may batch ordinary task-progress tool calls with at
-  most one Spine transition. Never include more than one of \`spine_open\`, \`spine_next\`, or
-  \`spine_close\` in the same assistant response.
-* \`summary\` is the concise goal summary for the node being opened: for \`spine_open\`,
-  the child goal; for \`spine_next\`, the next sibling goal.
-* \`memory\` is concise continuation state with progress, big-picture position,
-  decisions, evidence, constraints, risks, remaining work, and critical
-  references.
-* Optimize for compact recoverability: preserve the smallest sufficient state
-  that lets future work continue correctly without replaying this node. Treat
-  inherited context and assembled child memory as already available, then write
-  only compact deltas and current state needed to continue correctly.
-* Use \`spine_open\` to start child work, \`spine_close\` to return completed evidence to the
-  parent, and \`spine_next\` to finish the current node and continue from distilled
-  memory in a fresh sibling.
-* \`spine_tree\` is read-only; actual transitions happen only through \`spine_open\`,
-  \`spine_close\`, and \`spine_next\`.
-* Spine transitions change task scope, not communication state. A final response,
-  status update, or user-facing report does not by itself require a \`spine_open\`,
-  \`spine_next\`, or \`spine_close\` call; never create a reporting node or perform
-  a transition solely for delivery.
-* Root-epoch ids such as \`1\` or \`2\` cannot be closed. The initial \`1.1\` is a
-  startup work node, not a concrete task node; use \`spine_open\` before doing task work.
-* \`<spine_tran_status>\` gives current node orientation; \`<spine_memory>\` gives
-  continuation memory from closed work.
-* \`[U#]\` anchors refer to numbered user requests. When writing memory, preserve
-  \`[U#]\` anchors for user requests that still matter. Do not maintain a separate
-  request-status ledger when the relevant intent is already captured in ordinary
-  continuation state. After \`<spine_memory>\` continuity or a node transition,
-  report only new results, blockers, or requested details.
-* Place user-facing replies where they are most useful: local intermediate
-  results may wait for later merge, while complete conclusions, blocking status,
-  or decisions needing user input should be surfaced promptly.
+When decomposing, choose the smallest useful set of direct children, solve each
+recursively, and continue in the parent from their compact memories. Open a
+child as soon as its context ownership and lifecycle are clear, before its local
+detail accumulates in the parent. Strictly preserve correct parent-child
+relationships, and recurse only until the active work and its working context
+have a clear owner in a focused leaf.
+
+Lifecycle rules:
+
+* \`spine_open(summary)\` enters a direct child and begins the lifecycle of the
+  working context it owns. Inherited context remains visible to every
+  descendant, so opening a node focuses ownership but does not reduce visible
+  context; compression is realized only after \`spine_close\` or \`spine_next\`.
+* Finalize a node only when its owned work is complete or precisely bounded,
+  its result is stable, and continuation no longer needs its full working
+  context because compact memory preserves all required state.
+* \`spine_close(memory)\` finalizes the current node, replaces its working
+  context with compact continuation memory, and returns to its immediate
+  parent. Use it when the remaining work and context belong in that parent.
+* \`spine_next(summary, memory)\` performs the same finalization and enters a
+  true sibling under the same parent. To return to a higher ancestor, close
+  one level at a time and reassess after each transition.
+* Follow the tool's Node Memory contract. Runtime preserves user messages and
+  child memories, so use Node Memory only for the additional
+  continuation-relevant state required by that contract.
+* Treat \`[U#]\` anchors as internal Node Memory references. Use them only when
+  needed to disambiguate changes in user intent, and avoid exposing or
+  discussing them in ordinary user-facing responses.
+
+Execution rules:
+
+* Once context ownership and lifecycle determine the node boundaries, complete
+  work in as few assistant turns as practical while minimizing total context
+  pressure, roughly the sum of visible context across assistant turns. Issue
+  all compatible ready tool calls in the same turn. Use at most one Spine
+  transition (\`spine_open\`, \`spine_next\`, or \`spine_close\`) per turn.
+  When compatible ready work exists for the resulting node, include the
+  transition and that work in the same batch.
+* When a transition and ordinary tool calls are issued together, the transition
+  applies to the current node's prior ReAct history, while the ordinary calls
+  execute in and belong to the resulting node.
+* \`<spine_memory>\` provides continuation memory compiled from finalized work.
+* Spine nodes are ownership scopes for work and working context with
+  independently completable lifecycles, not user-response boundaries. Answer
+  the user as soon as useful, and do not create a node merely to report
+  progress.
 
 </spine_view>`;
 
