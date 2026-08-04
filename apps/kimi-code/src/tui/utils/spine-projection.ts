@@ -121,12 +121,14 @@ export function applyAcceptedSpineTransition(
 /**
  * Whole-tree todo-panel view of the projection, preserving insertion order
  * within each sibling group: closed nodes become done, the open cursor chain
- * becomes in_progress, and the cursor node is flagged `active`. Empty at the
- * root epoch (the panel then hides, as for an all-done list).
+ * becomes in_progress, and the cursor node is flagged `active`. Empty only
+ * before the first `spine_open`; once the cursor stack empties (every node
+ * closed) the projection is the all-done forest, so the panel keeps showing
+ * the completed tree — as a flat all-done todo list does — until `clear()`
+ * or the next task's `spine_open` starts a fresh root beside it.
  */
 export function projectSpineTree(state: SpineProjectionState): readonly TodoTreeNode[] {
   const cursor = state.cursorStack.at(-1);
-  if (cursor === undefined) return [];
 
   const childrenByParent = new Map<number | null, number[]>();
   for (const [index, node] of state.nodes.entries()) {

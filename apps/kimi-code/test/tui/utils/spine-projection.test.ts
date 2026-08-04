@@ -93,14 +93,16 @@ describe('spine projection reducer', () => {
     ]);
   });
 
-  it('closing back to the root epoch empties the panel', () => {
+  it('closing back to the root epoch keeps the all-done tree visible', () => {
     let state = applyAcceptedSpineTransition(createSpineProjectionState(), 'spine_open', {
       summary: 'only task',
     });
     state = applyAcceptedSpineTransition(state, 'spine_close', { memory: 'all done' });
 
     expect(isSpineProjectionActive(state)).toBe(true);
-    expect(projectSpineTree(state)).toEqual([]);
+    expect(projectSpineTree(state)).toEqual([
+      { title: 'only task', status: 'done', children: [] },
+    ]);
   });
 
   it('keeps siblings nested under their parent and supports multiple roots', () => {
@@ -147,6 +149,8 @@ describe('spine projection reducer', () => {
       memory: 'nowhere to go',
     });
     expect(isSpineProjectionActive(state)).toBe(false);
+    // Never opened → nothing to show: the panel stays hidden while idle.
+    expect(projectSpineTree(state)).toEqual([]);
   });
 });
 
@@ -256,5 +260,19 @@ describe('spine projection history scan', () => {
     });
 
     expect(scanSpineProjectionFromHistory(history)).toEqual(live);
+  });
+
+  it('rebuilds a fully closed tree as the all-done forest on resume', () => {
+    const history = [
+      assistant('c1', 'spine_open', { summary: 'task A' }),
+      tool('c1', ACCEPTED_OUTPUT),
+      assistant('c2', 'spine_close', { memory: 'A done' }),
+      tool('c2', ACCEPTED_OUTPUT),
+    ];
+
+    const state = scanSpineProjectionFromHistory(history);
+    expect(projectSpineTree(state)).toEqual([
+      { title: 'task A', status: 'done', children: [] },
+    ]);
   });
 });
