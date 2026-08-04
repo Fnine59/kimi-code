@@ -263,6 +263,7 @@ import type {
   CreateSessionOptions,
   ExportSessionInput,
   ExportSessionResult,
+  FileMeta,
   ForkSessionInput,
   GetConfigOptions,
   GetCronTasksResult,
@@ -296,6 +297,7 @@ import type {
   SessionUsage,
   SkillSummary,
   TelemetryClient,
+  UploadFileOptions,
   WorkspaceTrustInfo,
 } from '#/types';
 import {
@@ -549,6 +551,19 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
 
   override async getExperimentalFeatures(): Promise<readonly ExperimentalFeatureState[]> {
     return this.klient.global.flags.list();
+  }
+
+  /**
+   * `uploadFile` → `klient.global.files.save` (the app-scope `IFileService`).
+   * The SDK's single `name` doubles as the engine's `filename`; the engine's
+   * `SaveOptions.name` (display name) defaults to it.
+   */
+  override async uploadFile(data: Uint8Array, options: UploadFileOptions): Promise<FileMeta> {
+    return this.klient.global.files.save({
+      data,
+      filename: options.name,
+      mimeType: options.mimeType,
+    });
   }
 
   /**

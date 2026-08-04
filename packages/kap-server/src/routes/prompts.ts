@@ -218,10 +218,10 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
 
         // Media resolution runs BEFORE any control mutation, so a failed
         // submission leaves the session's controls untouched. Prompt videos
-        // are materialized to a local copy and carried into context as an
-        // internal `kimi-file://` reference; the engine resolves them to a
-        // provider form (upload / inline / `<video path>` tag) at request
-        // time, so the edge no longer uploads.
+        // and uploaded images are materialized to a local copy and carried
+        // into context as an internal `kimi-file://` reference; the engine
+        // resolves them to a provider form (upload / inline / path tag) at
+        // request time, so the edge no longer uploads.
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
         const resolvedContent = await resolvePromptMediaFiles(
           req.body.content,
@@ -393,6 +393,15 @@ function corePartsToProtocol(content: readonly ContentPart[]): PromptSubmission[
   for (const part of content) {
     if (part.type === 'text') parts.push({ type: 'text', text: part.text });
     else if (part.type === 'image_url') {
+      // Same daemon-reference rule as `video_url` below: an internal
+      // `kimi-file://<id>?path=…` reference projects back to the daemon
+      // upload it came from — the materialization path never leaks to the
+      // client.
+      const kimiFile = parseKimiFileUrl(part.imageUrl.url);
+      if (kimiFile !== undefined) {
+        parts.push({ type: 'image', source: { kind: 'file', file_id: kimiFile.fileId } });
+        continue;
+      }
       const match = /^data:([^;]+);base64,(.*)$/.exec(part.imageUrl.url);
       parts.push(match === null
         ? { type: 'image', source: { kind: 'url', url: part.imageUrl.url, id: part.imageUrl.id } }
