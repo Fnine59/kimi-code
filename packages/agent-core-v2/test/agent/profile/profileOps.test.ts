@@ -8,6 +8,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { AgentProfileService } from '#/agent/profile/profileService';
 import { ActiveToolsModel, ProfileModel } from '#/agent/profile/profileOps';
 import { IAgentSkillDisclosureService } from '#/agent/skillDisclosure/skillDisclosure';
+import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   type EnvironmentDisclosureSnapshot,
@@ -247,8 +248,13 @@ function buildHost(key: string): {
     ready: Promise.resolve(),
     agentsMd: undefined,
     agentsMdWarning: undefined,
+    agentsMdPaths: undefined,
     onDidChange: Event.None as Event<void>,
   } satisfies ISessionInstructionsProvider);
+  host.stub(IAgentAgentsMdReminderService, {
+    _serviceBrand: undefined,
+    seedInjected: () => {},
+  });
   host.stub(ISessionToolPolicy, {
     _serviceBrand: undefined,
     ready: Promise.resolve(),

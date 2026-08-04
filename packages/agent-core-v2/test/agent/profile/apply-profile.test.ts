@@ -266,6 +266,7 @@ function skillCatalogWithChange(change: Emitter<string>): TestAgentServiceOverri
     onDidChange: change.event,
     load: async () => {},
     reload: async () => {},
+    list: async () => [],
   });
 }
 
