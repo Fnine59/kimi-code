@@ -186,10 +186,11 @@ describe('executeSpawnBranches', () => {
       'Executable work is defined by the assignment. Inherited context supplies constraints and evidence for that work.',
     );
     expect(envelope).toContain(
-      'Every branch has a duty to inspect the shared blackboard path declared in its assignment.',
+      'When the assignment declares a collaboration contract, follow its named root, peer roles, artifact format, update/read protocol, synchronization points, and bounded fallback.',
     );
-    expect(envelope).toContain('`[branch A]`');
-    expect(envelope).toContain('`@summary`');
+    expect(envelope).toContain(
+      'Before returning your final response, perform the declared final peer read and state which peer deltas you incorporated.',
+    );
     expect(envelope).toContain(
       'Treat each <spine_tran_status> update as task-tree parser telemetry for this branch session. ' +
         'Across status updates, executable work remains defined by the assignment.',
@@ -204,7 +205,7 @@ describe('executeSpawnBranches', () => {
     const envelope = taskEnvelope(TASKS[1]!, TASKS);
     expect(envelope).toContain('You are: branch B');
     expect(envelope).toContain('Peer branches in this spawn:\n- branch A');
-    expect(envelope).toContain('`[branch B]`');
+    expect(envelope).toContain('When the assignment declares a collaboration contract,');
   });
 
   it('returns a completed receipt when all branches succeed', async () => {

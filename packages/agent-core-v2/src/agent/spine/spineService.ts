@@ -412,8 +412,8 @@ export class AgentSpineService extends Disposable implements IAgentSpineService 
       if (summary.length === 0 || task.prompt.trim().length === 0) {
         return reject('spine_spawn task summary and prompt must not be empty.');
       }
-      // Summaries are the branches' public identities (peer roster, blackboard
-      // `[summary]` / `@summary` addressing), so they must be unique per call.
+      // Summaries are the branches' public identities (peer roster and
+      // collaboration-contract peer references), so they must be unique per call.
       if (seenSummaries.has(summary)) {
         return reject(`spine_spawn task ${String(ordinal)} has duplicate summary \`${summary}\`.`);
       }
