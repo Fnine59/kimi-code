@@ -46,6 +46,7 @@ export interface EditorKeyboardHost {
     imageAttachmentIds: readonly number[];
     videoAttachmentIds: readonly number[];
   }): boolean;
+  releaseStagingMedia(imageAttachmentIds: readonly number[], paths: readonly string[]): void;
   recallLastQueued(): QueuedMessage | undefined;
   showError(msg: string): void;
   track(event: string, props?: Record<string, unknown>): void;
@@ -287,7 +288,12 @@ export class EditorKeyboardController {
         if (trimmed.length > 0) {
           // Queued items carry the parts extracted when they were submitted
           // (and were already capability-validated then).
-          items.push({ text: trimmed, parts: m.parts, imageAttachmentIds: m.imageAttachmentIds });
+          items.push({
+            text: trimmed,
+            parts: m.parts,
+            imageAttachmentIds: m.imageAttachmentIds,
+            stagingPaths: m.stagingPaths,
+          });
         }
       }
       let editorExtraction: ReturnType<typeof extractMediaAttachments> | undefined;
@@ -307,6 +313,7 @@ export class EditorKeyboardController {
             editorExtraction.imageAttachmentIds.length > 0
               ? editorExtraction.imageAttachmentIds
               : undefined,
+          stagingPaths: editorExtraction.stagingPaths,
         });
       }
 
@@ -318,16 +325,24 @@ export class EditorKeyboardController {
           editorExtraction !== undefined &&
           !host.validateMediaCapabilities(editorExtraction)
         ) {
+          host.releaseStagingMedia(
+            editorExtraction.imageAttachmentIds,
+            editorExtraction.stagingPaths,
+          );
+          return;
+        }
+        const session = host.session;
+        if (host.state.appState.model.trim().length === 0 || session === undefined) {
+          host.releaseStagingMedia(
+            editorExtraction?.imageAttachmentIds ?? [],
+            editorExtraction?.stagingPaths ?? [],
+          );
+          host.showError(LLM_NOT_SET_MESSAGE);
           return;
         }
         host.state.queuedMessages = queued.filter((m) => m.mode === 'bash');
         if (!editorIsBash) editor.setText('');
-        const session = host.session;
-        if (host.state.appState.model.trim().length === 0 || session === undefined) {
-          host.showError(LLM_NOT_SET_MESSAGE);
-        } else {
-          host.steerMessage(session, items);
-        }
+        host.steerMessage(session, items);
       }
       host.updateQueueDisplay();
       host.state.ui.requestRender();
@@ -548,6 +563,7 @@ export class EditorKeyboardController {
       const meta = await harness.uploadFile(bytes, {
         name: `pasted-image.${imageExtensionForMime(mime)}`,
         mimeType: mime,
+        expiresInSec: 60 * 60,
       });
       return meta.id;
     } catch {

@@ -113,6 +113,17 @@ export interface ResolvePromptMediaOptions {
   readonly telemetry?: ITelemetryService;
 }
 
+export interface PromptMediaPreparation {
+  readonly content: WireContent;
+  /**
+   * Delete the transient daemon uploads this preparation created (the
+   * compressed re-save). Call on failure, or hand the prompt off to the
+   * engine with it so the uploads are cleaned up once the engine's intake
+   * has materialized its own session-owned copies.
+   */
+  readonly release: () => Promise<void>;
+}
+
 /**
  * Resolve a wire content list's media/file references into their final wire
  * form: uploaded files materialize to a session-local path notice, images are
@@ -124,7 +135,16 @@ export async function resolvePromptMediaFiles(
   store: IFileService,
   cacheDir: string,
   options: ResolvePromptMediaOptions = {},
-): Promise<WireContent> {
+): Promise<PromptMediaPreparation> {
+  const ownedFileIds = new Set<string>();
+  let released = false;
+  const release = async (): Promise<void> => {
+    if (released) return;
+    released = true;
+    await Promise.all(
+      [...ownedFileIds].map((fileId) => store.delete(fileId).catch(() => undefined)),
+    );
+  };
   let changed = false;
   let originalsDir: string | undefined;
   let originalsDirResolved = false;
@@ -156,208 +176,214 @@ export async function resolvePromptMediaFiles(
   const telemetryFor = (source: string): ImageCompressionTelemetry | undefined =>
     options.telemetry === undefined ? undefined : { client: options.telemetry, source };
   const content: WireContent = [];
-  for (const part of input) {
-    // Inline base64 image: compress the payload in place. This mirrors the v1
-    // server path for REST clients that submit an image without uploading it.
-    if (part.type === 'image' && part.source.kind === 'base64') {
-      // Formats the provider cannot accept must never enter the session
-      // history — one unsupported image_url makes every later request fail.
-      // The bytes are authoritative: an image labeled image/png that is
-      // actually AVIF is gated on the sniffed format, not the label. The
-      // bytes are still the user's content, though: persist them as a
-      // path-referenced attachment so the model can read and convert them
-      // itself (best effort — the plain notice stands in when persisting
-      // fails). Inline base64 has no original name, so the file is addressed
-      // by content hash with a name derived from the sniffed format.
-      const effectiveMime = resolveEffectiveImageMime(
-        part.source.media_type,
-        decodeBase64Prefix(part.source.data),
-      );
-      if (!isModelAcceptedImageMime(effectiveMime)) {
-        const bytes = Buffer.from(part.source.data, 'base64');
-        const name = `image.${imageExtensionForMime(effectiveMime)}`;
-        const persisted = await persistAttachmentBytes(
-          bytes,
-          `${createHash('sha256').update(bytes).digest('hex').slice(0, 32)}-${name}`,
-          await resolveAttachmentsDir(),
+  try {
+    for (const part of input) {
+      // Inline base64 image: compress the payload in place. This mirrors the v1
+      // server path for REST clients that submit an image without uploading it.
+      if (part.type === 'image' && part.source.kind === 'base64') {
+        // Formats the provider cannot accept must never enter the session
+        // history — one unsupported image_url makes every later request fail.
+        // The bytes are authoritative: an image labeled image/png that is
+        // actually AVIF is gated on the sniffed format, not the label. The
+        // bytes are still the user's content, though: persist them as a
+        // path-referenced attachment so the model can read and convert them
+        // itself (best effort — the plain notice stands in when persisting
+        // fails). Inline base64 has no original name, so the file is addressed
+        // by content hash with a name derived from the sniffed format.
+        const effectiveMime = resolveEffectiveImageMime(
+          part.source.media_type,
+          decodeBase64Prefix(part.source.data),
         );
+        if (!isModelAcceptedImageMime(effectiveMime)) {
+          const bytes = Buffer.from(part.source.data, 'base64');
+          const name = `image.${imageExtensionForMime(effectiveMime)}`;
+          const persisted = await persistAttachmentBytes(
+            bytes,
+            `${createHash('sha256').update(bytes).digest('hex').slice(0, 32)}-${name}`,
+            await resolveAttachmentsDir(),
+          );
+          content.push({
+            type: 'text',
+            text: persisted === null
+              ? buildUnsupportedImageNotice(effectiveMime)
+              : buildAttachedFileNotice(name, effectiveMime, bytes.length, persisted),
+          });
+          changed = true;
+          continue;
+        }
+        const canonicalMime = normalizeImageMime(effectiveMime);
+        const compressed = await compressBase64ForModel(part.source.data, canonicalMime, {
+          telemetry: telemetryFor('prompt_inline'),
+        });
+        if (compressed.changed) {
+          const dir = await resolveOriginalsDir();
+          const originalPath = await persistOriginalImage(
+            Buffer.from(part.source.data, 'base64'),
+            part.source.media_type,
+            { dir },
+          );
+          content.push({
+            type: 'text',
+            text: buildImageCompressionCaption({
+              original: {
+                width: compressed.originalWidth,
+                height: compressed.originalHeight,
+                byteLength: compressed.originalByteLength,
+                mimeType: part.source.media_type,
+              },
+              final: {
+                width: compressed.width,
+                height: compressed.height,
+                byteLength: compressed.finalByteLength,
+                mimeType: compressed.mimeType,
+              },
+              originalPath,
+            }),
+          });
+          content.push({
+            type: 'image',
+            source: { kind: 'base64', media_type: compressed.mimeType, data: compressed.base64 },
+          });
+          changed = true;
+        } else {
+          content.push(part);
+        }
+        continue;
+      }
+
+      // Remote image URL: no bytes to sniff, so reject when its path extension
+      // names a format providers reject (e.g. a link ending in `.avif`) — the
+      // notice keeps the URL so the model can still fetch and convert the
+      // image. Extensionless / unknown URLs pass through to the provider and
+      // the 400 recovery. Image+URL parts that pass are re-emitted unchanged.
+      if (part.type === 'image' && part.source.kind === 'url') {
+        const extMime = unsupportedImageMimeFromUrl(part.source.url);
+        if (extMime !== null) {
+          content.push({ type: 'text', text: buildUnsupportedImageNotice(extMime, part.source.url) });
+          changed = true;
+          continue;
+        }
+        content.push(part);
+        continue;
+      }
+
+      // Arbitrary file attachment: materialize the uploaded bytes next to the
+      // session and replace the part with a path reference — the model opens it
+      // with the Read tool instead of receiving it as a media part.
+      if (part.type === 'file') {
+        const file = await store.get(part.file_id);
+        const attachedPath = await materializeAttachmentToDir(file, await resolveAttachmentsDir());
         content.push({
           type: 'text',
-          text: persisted === null
-            ? buildUnsupportedImageNotice(effectiveMime)
-            : buildAttachedFileNotice(name, effectiveMime, bytes.length, persisted),
+          text: buildAttachedFileNotice(file.meta.name, file.meta.media_type, file.meta.size, attachedPath),
         });
         changed = true;
         continue;
       }
-      const canonicalMime = normalizeImageMime(effectiveMime);
-      const compressed = await compressBase64ForModel(part.source.data, canonicalMime, {
-        telemetry: telemetryFor('prompt_inline'),
-      });
-      if (compressed.changed) {
-        const dir = await resolveOriginalsDir();
-        const originalPath = await persistOriginalImage(
-          Buffer.from(part.source.data, 'base64'),
-          part.source.media_type,
-          { dir },
-        );
-        content.push({
-          type: 'text',
-          text: buildImageCompressionCaption({
-            original: {
-              width: compressed.originalWidth,
-              height: compressed.originalHeight,
-              byteLength: compressed.originalByteLength,
-              mimeType: part.source.media_type,
-            },
-            final: {
-              width: compressed.width,
-              height: compressed.height,
-              byteLength: compressed.finalByteLength,
-              mimeType: compressed.mimeType,
-            },
-            originalPath,
-          }),
+
+      if ((part.type !== 'image' && part.type !== 'video') || part.source.kind !== 'file') {
+        content.push(part);
+        continue;
+      }
+
+      const file = await store.get(part.source.file_id);
+      assertMediaFile(file, part.type);
+      if (part.type === 'image') {
+        const data = await readFileOrStream(file);
+        let mediaType = file.meta.media_type;
+        // Same format gate as the inline path above, and again the bytes are
+        // authoritative: an upload whose Content-Type lies (AVIF bytes sent
+        // as image/png) is gated on the sniffed format. Like the inline path,
+        // keep the bytes as a path-referenced attachment instead of dropping
+        // them (best effort — the plain notice stands in when persisting
+        // fails).
+        mediaType = resolveEffectiveImageMime(mediaType, data);
+        if (!isModelAcceptedImageMime(mediaType)) {
+          const persisted = await persistAttachmentBytes(
+            data,
+            `${file.meta.id}-${sanitizeAttachmentName(file.meta.name)}`,
+            await resolveAttachmentsDir(),
+          );
+          content.push({
+            type: 'text',
+            text: persisted === null
+              ? buildUnsupportedImageNotice(mediaType, file.meta.name)
+              : buildAttachedFileNotice(file.meta.name, mediaType, file.meta.size, persisted),
+          });
+          changed = true;
+          continue;
+        }
+        // Forward the canonical MIME (image/jpg → image/jpeg, case/whitespace)
+        // — strict provider whitelists reject the raw alias.
+        mediaType = normalizeImageMime(mediaType);
+        const compressed = await compressImageForModel(data, mediaType, {
+          telemetry: telemetryFor('prompt_file'),
         });
+        if (compressed.changed) {
+          const dir = await resolveOriginalsDir();
+          const originalPath = await persistOriginalImage(data, mediaType, { dir });
+          content.push({
+            type: 'text',
+            text: buildImageCompressionCaption({
+              original: {
+                width: compressed.originalWidth,
+                height: compressed.originalHeight,
+                byteLength: compressed.originalByteLength,
+                mimeType: mediaType,
+              },
+              final: {
+                width: compressed.width,
+                height: compressed.height,
+                byteLength: compressed.finalByteLength,
+                mimeType: compressed.mimeType,
+              },
+              originalPath,
+            }),
+          });
+        }
+        // Like an uploaded video, the image enters context as an internal
+        // `kimi-file://<id>?path=<materialized path>` reference the engine
+        // resolves at request time, preceded by the `<image path>` tag text so
+        // the model always has a path it can re-open. When compression changed
+        // the bytes, the reference addresses a NEW daemon upload holding the
+        // final bytes — the client's original upload stays untouched.
+        let finalFile = file;
+        if (compressed.changed) {
+          const saved = await store.save(
+            Readable.from(Buffer.from(compressed.data)),
+            compressedUploadName(file.meta.name, compressed.mimeType),
+            { mimeType: compressed.mimeType, expiresInSec: 60 * 60 },
+          );
+          ownedFileIds.add(saved.id);
+          finalFile = await store.get(saved.id);
+        }
+        const mediaPath = await materializePromptMedia(finalFile, resolveMediaStore(), cacheDir);
+        content.push({ type: 'text', text: buildMediaPathTag('image', mediaPath) });
         content.push({
           type: 'image',
-          source: { kind: 'base64', media_type: compressed.mimeType, data: compressed.base64 },
-        });
-        changed = true;
-      } else {
-        content.push(part);
-      }
-      continue;
-    }
-
-    // Remote image URL: no bytes to sniff, so reject when its path extension
-    // names a format providers reject (e.g. a link ending in `.avif`) — the
-    // notice keeps the URL so the model can still fetch and convert the
-    // image. Extensionless / unknown URLs pass through to the provider and
-    // the 400 recovery. Image+URL parts that pass are re-emitted unchanged.
-    if (part.type === 'image' && part.source.kind === 'url') {
-      const extMime = unsupportedImageMimeFromUrl(part.source.url);
-      if (extMime !== null) {
-        content.push({ type: 'text', text: buildUnsupportedImageNotice(extMime, part.source.url) });
-        changed = true;
-        continue;
-      }
-      content.push(part);
-      continue;
-    }
-
-    // Arbitrary file attachment: materialize the uploaded bytes next to the
-    // session and replace the part with a path reference — the model opens it
-    // with the Read tool instead of receiving it as a media part.
-    if (part.type === 'file') {
-      const file = await store.get(part.file_id);
-      const attachedPath = await materializeAttachmentToDir(file, await resolveAttachmentsDir());
-      content.push({
-        type: 'text',
-        text: buildAttachedFileNotice(file.meta.name, file.meta.media_type, file.meta.size, attachedPath),
-      });
-      changed = true;
-      continue;
-    }
-
-    if ((part.type !== 'image' && part.type !== 'video') || part.source.kind !== 'file') {
-      content.push(part);
-      continue;
-    }
-
-    const file = await store.get(part.source.file_id);
-    assertMediaFile(file, part.type);
-    if (part.type === 'image') {
-      const data = await readFileOrStream(file);
-      let mediaType = file.meta.media_type;
-      // Same format gate as the inline path above, and again the bytes are
-      // authoritative: an upload whose Content-Type lies (AVIF bytes sent
-      // as image/png) is gated on the sniffed format. Like the inline path,
-      // keep the bytes as a path-referenced attachment instead of dropping
-      // them (best effort — the plain notice stands in when persisting
-      // fails).
-      mediaType = resolveEffectiveImageMime(mediaType, data);
-      if (!isModelAcceptedImageMime(mediaType)) {
-        const persisted = await persistAttachmentBytes(
-          data,
-          `${file.meta.id}-${sanitizeAttachmentName(file.meta.name)}`,
-          await resolveAttachmentsDir(),
-        );
-        content.push({
-          type: 'text',
-          text: persisted === null
-            ? buildUnsupportedImageNotice(mediaType, file.meta.name)
-            : buildAttachedFileNotice(file.meta.name, mediaType, file.meta.size, persisted),
+          source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id, mediaPath) },
         });
         changed = true;
         continue;
       }
-      // Forward the canonical MIME (image/jpg → image/jpeg, case/whitespace)
-      // — strict provider whitelists reject the raw alias.
-      mediaType = normalizeImageMime(mediaType);
-      const compressed = await compressImageForModel(data, mediaType, {
-        telemetry: telemetryFor('prompt_file'),
-      });
-      if (compressed.changed) {
-        const dir = await resolveOriginalsDir();
-        const originalPath = await persistOriginalImage(data, mediaType, { dir });
-        content.push({
-          type: 'text',
-          text: buildImageCompressionCaption({
-            original: {
-              width: compressed.originalWidth,
-              height: compressed.originalHeight,
-              byteLength: compressed.originalByteLength,
-              mimeType: mediaType,
-            },
-            final: {
-              width: compressed.width,
-              height: compressed.height,
-              byteLength: compressed.finalByteLength,
-              mimeType: compressed.mimeType,
-            },
-            originalPath,
-          }),
-        });
-      }
-      // Like an uploaded video, the image enters context as an internal
-      // `kimi-file://<id>?path=<materialized path>` reference the engine
-      // resolves at request time, preceded by the `<image path>` tag text so
-      // the model always has a path it can re-open. When compression changed
-      // the bytes, the reference addresses a NEW daemon upload holding the
-      // final bytes — the client's original upload stays untouched.
-      let finalFile = file;
-      if (compressed.changed) {
-        const saved = await store.save(
-          Readable.from(Buffer.from(compressed.data)),
-          compressedUploadName(file.meta.name, compressed.mimeType),
-          { mimeType: compressed.mimeType },
-        );
-        finalFile = await store.get(saved.id);
-      }
-      const mediaPath = await materializePromptMedia(finalFile, resolveMediaStore(), cacheDir);
-      content.push({ type: 'text', text: buildMediaPathTag('image', mediaPath) });
+
+      // Uploaded video: materialize a local copy the model can open as a
+      // fallback, and carry the upload into context as an internal
+      // `kimi-file://<id>?path=<materialized path>` reference. The engine
+      // resolves it to a provider form (upload / inline / `<video path>` tag) at
+      // request time, so the edge never uploads and never blocks on the provider.
+      const mediaPath = await materializePromptMedia(file, resolveMediaStore(), cacheDir);
       content.push({
-        type: 'image',
-        source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id, mediaPath) },
+        type: 'video',
+        source: { kind: 'url', url: buildKimiFileUrl(file.meta.id, mediaPath) },
       });
       changed = true;
-      continue;
     }
-
-    // Uploaded video: materialize a local copy the model can open as a
-    // fallback, and carry the upload into context as an internal
-    // `kimi-file://<id>?path=<materialized path>` reference. The engine
-    // resolves it to a provider form (upload / inline / `<video path>` tag) at
-    // request time, so the edge never uploads and never blocks on the provider.
-    const mediaPath = await materializePromptMedia(file, resolveMediaStore(), cacheDir);
-    content.push({
-      type: 'video',
-      source: { kind: 'url', url: buildKimiFileUrl(file.meta.id, mediaPath) },
-    });
-    changed = true;
+    return { content: changed ? content : input, release };
+  } catch (error) {
+    await release();
+    throw error;
   }
-  return changed ? content : input;
 }
 
 /**

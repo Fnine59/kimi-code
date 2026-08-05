@@ -117,6 +117,7 @@ import {
   assertPromptFileRefs,
   contentToCoreParts,
   resolvePromptMediaFiles,
+  type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
@@ -303,6 +304,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         return;
       }
 
+      let preparedMedia: PromptMediaPreparation | undefined;
       try {
         // Attachments run through the same edge pipeline as prompt uploads
         // (validate → materialize → convert) BEFORE the activation starts, so
@@ -330,7 +332,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
           await assertPromptFileRefs(attachments, core.accessor.get(IFileService));
           const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
           const sessionDir = resolved.handle.accessor.get(ISessionContext).sessionDir;
-          const resolvedContent = await resolvePromptMediaFiles(
+          preparedMedia = await resolvePromptMediaFiles(
             attachments,
             core.accessor.get(IFileService),
             core.accessor.get(IBootstrapService).cacheDir,
@@ -340,7 +342,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
               resolveAttachmentsDir: async () => join(sessionDir, 'attachments'),
             },
           );
-          attachmentParts.push(...contentToCoreParts(resolvedContent));
+          attachmentParts.push(...contentToCoreParts(preparedMedia.content));
         }
         const agent = await ensureMainAgent(resolved.handle);
         // The engine applies the prompt-metadata update itself (main agent
@@ -352,6 +354,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         requestLog(req)?.info({ session_id, skill_name: parsed.id }, 'skill activated');
         reply.send(okEnvelope({ activated: true, skill_name: parsed.id }, req.id));
       } catch (err) {
+        await preparedMedia?.release();
         sendMappedError(reply, req.id, err);
       }
     },

@@ -1,4 +1,5 @@
 import { writeFileSync } from 'node:fs';
+import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { DeviceAuthorization } from '@moonshot-ai/kimi-code-oauth';
@@ -274,6 +275,7 @@ function createInitialAppState(input: KimiTUIStartupInput): AppState {
 interface SendMessageOptions {
   readonly parts?: readonly PromptPart[];
   readonly imageAttachmentIds?: readonly number[];
+  readonly stagingPaths?: readonly string[];
   readonly hasMedia?: boolean;
 }
 
@@ -288,6 +290,7 @@ export class KimiTUI {
   /** In-flight lazy session creation (v2 engine), shared by concurrent first-use triggers. */
   private ensureSessionPromise: Promise<Session | undefined> | null = null;
   private readonly cacheHint = new CacheHintController(this);
+  private readonly stagingCleanups = new Set<Promise<void>>();
   private readonly approvalController = new ApprovalController();
   private readonly questionController = new QuestionController();
   private readonly reverseRpcDisposers: Array<() => void> = [];
@@ -946,6 +949,9 @@ export class KimiTUI {
     // raw mode with a hidden cursor.
     try {
       await this.closeSession('shutting down');
+      this.clearQueuedMessages();
+      this.scheduleDeleteStagingFiles(this.imageStore.clear());
+      await this.drainStagingCleanups();
       await this.harness.close();
     } finally {
       this.sessionEventHandler.stopAllMcpServerStatusSpinners();
@@ -1262,11 +1268,12 @@ export class KimiTUI {
   }
 
   private drainOneQueuedMessage(): void {
-    const item = this.shiftQueuedMessage();
-    if (item === undefined) return;
     const session = this.session;
     if (session === undefined) return;
+    const item = this.shiftQueuedMessage();
+    if (item === undefined) return;
     if (item.mode === 'bash') {
+      this.releaseQueuedMedia([item]);
       void this.runShellCommandFromInput(item.text);
     } else {
       this.sendQueuedMessage(session, item);
@@ -1296,7 +1303,10 @@ export class KimiTUI {
       this.showError(`Failed to prepare media attachment: ${formatErrorMessage(error)}`);
       return;
     }
-    if (!this.validateMediaCapabilities(extraction)) return;
+    if (!this.validateMediaCapabilities(extraction)) {
+      this.releaseStagingMedia(extraction.imageAttachmentIds, extraction.stagingPaths);
+      return;
+    }
     // Idle cache-hint interception sits before session creation; it is
     // synchronous unless a hint actually fires, keeping the send path
     // await-free up to sendMessage.
@@ -1305,16 +1315,21 @@ export class KimiTUI {
     if (session === undefined) {
       if (!this.engineV2) {
         this.showError(LLM_NOT_SET_MESSAGE);
+        this.releaseStagingMedia(extraction.imageAttachmentIds, extraction.stagingPaths);
         return;
       }
       session = await this.ensureSession();
-      if (session === undefined) return;
+      if (session === undefined) {
+        this.releaseStagingMedia(extraction.imageAttachmentIds, extraction.stagingPaths);
+        return;
+      }
     }
     if (extraction.hasMedia) {
       this.sendMessage(session, text, {
         hasMedia: true,
         parts: extraction.parts,
         imageAttachmentIds: extraction.imageAttachmentIds,
+        stagingPaths: extraction.stagingPaths,
       });
     } else {
       this.sendMessage(session, text);
@@ -1384,6 +1399,7 @@ export class KimiTUI {
     if (this.state.queuedMessages.length === 0) return undefined;
     const last = this.state.queuedMessages.at(-1)!;
     this.state.queuedMessages = this.state.queuedMessages.slice(0, -1);
+    this.releaseQueuedMedia([last]);
     return last;
   }
 
@@ -1403,6 +1419,10 @@ export class KimiTUI {
       imageAttachmentIds:
         options?.imageAttachmentIds !== undefined && options.imageAttachmentIds.length > 0
           ? options.imageAttachmentIds
+          : undefined,
+      stagingPaths:
+        options?.stagingPaths !== undefined && options.stagingPaths.length > 0
+          ? options.stagingPaths
           : undefined,
       mode,
     });
@@ -1435,6 +1455,7 @@ export class KimiTUI {
 
   sendQueuedMessage(session: Session, item: QueuedMessage): void {
     if (item.mode === 'bash') {
+      this.releaseQueuedMedia([item]);
       void this.runShellCommandFromInput(item.text);
       return;
     }
@@ -1442,8 +1463,56 @@ export class KimiTUI {
       this.sendMessageInternal(session, item.text, {
         parts: item.parts,
         imageAttachmentIds: item.imageAttachmentIds,
+        stagingPaths: item.stagingPaths,
       });
     });
+  }
+
+  private async deleteStagingFiles(
+    fileIds: readonly string[],
+    paths: readonly string[] = [],
+  ): Promise<void> {
+    await Promise.all(
+      [
+        ...fileIds.map((fileId) => this.harness.deleteFile(fileId).catch(() => undefined)),
+        ...paths.map((path) => unlink(path).catch(() => undefined)),
+      ],
+    );
+  }
+
+  private scheduleDeleteStagingFiles(
+    fileIds: readonly string[],
+    paths: readonly string[] = [],
+  ): void {
+    if (fileIds.length === 0 && paths.length === 0) return;
+    this.trackStagingCleanup(this.deleteStagingFiles(fileIds, paths));
+  }
+
+  private trackStagingCleanup(cleanup: Promise<void>): void {
+    let tracked!: Promise<void>;
+    tracked = cleanup.catch(() => undefined).finally(() => {
+      this.stagingCleanups.delete(tracked);
+    });
+    this.stagingCleanups.add(tracked);
+  }
+
+  private async drainStagingCleanups(): Promise<void> {
+    while (this.stagingCleanups.size > 0) {
+      await Promise.allSettled(this.stagingCleanups);
+    }
+  }
+
+  releaseStagingMedia(imageAttachmentIds: readonly number[], paths: readonly string[]): void {
+    const fileIds = this.imageStore.takeFileIds(imageAttachmentIds);
+    this.scheduleDeleteStagingFiles(fileIds, paths);
+  }
+
+  private releaseQueuedMedia(items: readonly QueuedMessage[]): void {
+    const fileIds = items.flatMap((item) =>
+      this.imageStore.takeFileIds(item.imageAttachmentIds ?? []),
+    );
+    const paths = items.flatMap((item) => item.stagingPaths ?? []);
+    this.scheduleDeleteStagingFiles(fileIds, paths);
   }
 
   requestQueuedGoalPromotion(): void {
@@ -1463,6 +1532,7 @@ export class KimiTUI {
       content: input,
       imageAttachmentIds,
     });
+    const stagingFileIds = this.imageStore.takeFileIds(imageAttachmentIds ?? []);
 
     this.beginSessionRequest();
 
@@ -1473,20 +1543,30 @@ export class KimiTUI {
     // the message. Steer instead: the engine buffers it into the running goal
     // turn, or launches a turn of its own if the loop just ended.
     if (this.state.appState.goal?.status === 'active') {
-      void session.steer(sdkInput).catch((error: unknown) => {
-        const message = formatErrorMessage(error);
-        // Same reset as the prompt path: beginSessionRequest already moved the
-        // TUI to the waiting phase, and no turn events may follow a failed
-        // steer (e.g. the session is gone), which would leave the UI stuck
-        // queueing input behind a request that never completes.
-        this.failSessionRequest(`Failed to steer: ${message}`);
-      });
+      this.trackStagingCleanup(
+        session
+          .steer(sdkInput)
+          .catch((error: unknown) => {
+            const message = formatErrorMessage(error);
+            // Same reset as the prompt path: beginSessionRequest already moved the
+            // TUI to the waiting phase, and no turn events may follow a failed
+            // steer (e.g. the session is gone), which would leave the UI stuck
+            // queueing input behind a request that never completes.
+            this.failSessionRequest(`Failed to steer: ${message}`);
+          })
+          .then(() => this.deleteStagingFiles(stagingFileIds, options?.stagingPaths)),
+      );
       return;
     }
-    void session.prompt(sdkInput).catch((error: unknown) => {
-      const message = formatErrorMessage(error);
-      this.failSessionRequest(`Failed to send: ${message}`);
-    });
+    this.trackStagingCleanup(
+      session
+        .prompt(sdkInput)
+        .catch((error: unknown) => {
+          const message = formatErrorMessage(error);
+          this.failSessionRequest(`Failed to send: ${message}`);
+        })
+        .then(() => this.deleteStagingFiles(stagingFileIds, options?.stagingPaths)),
+    );
   }
 
   sendSkillActivation(session: Session, skillName: string, skillArgs: string): void {
@@ -1503,12 +1583,21 @@ export class KimiTUI {
       this.showError(`Failed to prepare media attachment: ${formatErrorMessage(error)}`);
       return;
     }
-    if (!this.validateMediaCapabilities(rewrite)) return;
+    if (!this.validateMediaCapabilities(rewrite)) {
+      this.releaseStagingMedia(rewrite.imageAttachmentIds, rewrite.stagingPaths);
+      return;
+    }
     this.beginSessionRequest();
-    void session.activateSkill(skillName, rewrite.text).catch((error: unknown) => {
-      const message = formatErrorMessage(error);
-      this.failSessionRequest(`Skill "${skillName}" failed: ${message}`);
-    });
+    const stagingFileIds = this.imageStore.takeFileIds(rewrite.imageAttachmentIds);
+    this.trackStagingCleanup(
+      session
+        .activateSkill(skillName, rewrite.text)
+        .catch((error: unknown) => {
+          const message = formatErrorMessage(error);
+          this.failSessionRequest(`Skill "${skillName}" failed: ${message}`);
+        })
+        .then(() => this.deleteStagingFiles(stagingFileIds, rewrite.stagingPaths)),
+    );
   }
 
   activatePluginCommand(
@@ -1527,14 +1616,21 @@ export class KimiTUI {
       this.showError(`Failed to prepare media attachment: ${formatErrorMessage(error)}`);
       return;
     }
-    if (!this.validateMediaCapabilities(rewrite)) return;
+    if (!this.validateMediaCapabilities(rewrite)) {
+      this.releaseStagingMedia(rewrite.imageAttachmentIds, rewrite.stagingPaths);
+      return;
+    }
     this.beginSessionRequest();
-    void session
-      .activatePluginCommand(pluginId, commandName, rewrite.text)
-      .catch((error: unknown) => {
-        const message = formatErrorMessage(error);
-        this.failSessionRequest(`Command "${pluginId}:${commandName}" failed: ${message}`);
-      });
+    const stagingFileIds = this.imageStore.takeFileIds(rewrite.imageAttachmentIds);
+    this.trackStagingCleanup(
+      session
+        .activatePluginCommand(pluginId, commandName, rewrite.text)
+        .catch((error: unknown) => {
+          const message = formatErrorMessage(error);
+          this.failSessionRequest(`Command "${pluginId}:${commandName}" failed: ${message}`);
+        })
+        .then(() => this.deleteStagingFiles(stagingFileIds, rewrite.stagingPaths)),
+    );
   }
 
   private sendMessage(session: Session, input: string, options?: SendMessageOptions): void {
@@ -1577,10 +1673,19 @@ export class KimiTUI {
       });
     }
 
-    void session.steer(combineSteerInput(input)).catch((error: unknown) => {
-      const message = formatErrorMessage(error);
-      this.showError(`Failed to steer: ${message}`);
-    });
+    const stagingFileIds = input.flatMap((item) =>
+      this.imageStore.takeFileIds(item.imageAttachmentIds ?? []),
+    );
+    const stagingPaths = input.flatMap((item) => item.stagingPaths ?? []);
+    this.trackStagingCleanup(
+      session
+        .steer(combineSteerInput(input))
+        .catch((error: unknown) => {
+          const message = formatErrorMessage(error);
+          this.showError(`Failed to steer: ${message}`);
+        })
+        .then(() => this.deleteStagingFiles(stagingFileIds, stagingPaths)),
+    );
   }
 
   // =========================================================================
@@ -1592,7 +1697,9 @@ export class KimiTUI {
   }
 
   clearQueuedMessages(): void {
+    const queued = this.state.queuedMessages;
     this.state.queuedMessages = [];
+    this.releaseQueuedMedia(queued);
   }
 
   shiftQueuedMessage(): QueuedMessage | undefined {
@@ -2090,7 +2197,7 @@ export class KimiTUI {
     this.aborted = false;
     this.cacheHint.resetRuntime();
     this.streamingUI.discardPending();
-    this.state.queuedMessages = [];
+    this.clearQueuedMessages();
     this.state.swarmModeEntry = undefined;
     this.streamingUI.resetToolCallState();
     this.streamingUI.resetToolUi();
@@ -2441,7 +2548,8 @@ export class KimiTUI {
     this.clearTerminalInlineImages();
     this.state.todoPanel.clear();
     this.state.todoPanelContainer.clear();
-    this.imageStore.clear();
+    const stagingFileIds = this.imageStore.clear();
+    this.scheduleDeleteStagingFiles(stagingFileIds);
     this.renderWelcome();
     // No forced full render on session reset: let the differential renderer
     // converge on its own (a mass change above the viewport still makes the
@@ -2492,7 +2600,8 @@ export class KimiTUI {
     // only be dropped once its owning user message leaves the transcript.
     for (const entry of toRemove) {
       if (entry.kind === 'user' && entry.imageAttachmentIds !== undefined) {
-        this.imageStore.removeMany(entry.imageAttachmentIds);
+        const stagingFileIds = this.imageStore.removeMany(entry.imageAttachmentIds);
+        this.scheduleDeleteStagingFiles(stagingFileIds);
       }
     }
 

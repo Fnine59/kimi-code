@@ -8,7 +8,7 @@
 
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -36,9 +36,11 @@ import { type GetResult, IFileService } from '#/app/file/fileService';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ErrorCodes, Error2 } from '#/errors';
 import { createHooks } from '#/hooks';
-import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IWireService } from '#/wire/wire';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 
 import { stubContextMemory } from '../contextMemory/stubs';
 import { stubLoopWithHooks, stubToolExecutor, stubWire } from '../loop/stubs';
@@ -92,6 +94,7 @@ function harness(
     hooks: createHooks(['onWillCompact']),
     onDidFinishCompaction: Event.None,
   } as unknown as IAgentFullCompactionService);
+  const sessionDir = opts.sessionDir ?? '/nonexistent-session';
   const ix = createServices(disposables, {
     strict: true, additionalServices: (reg) => {
       registerStateServices(reg);
@@ -103,18 +106,15 @@ function harness(
       reg.define(IEventBus, EventBusService);
       reg.define(IAgentSystemReminderService, AgentSystemReminderService);
       reg.defineInstance(IFileService, stubFileService(opts.files ?? new Map()));
-      reg.defineInstance(
-        ISessionMediaStore,
-        new SessionMediaStoreService(
-          makeSessionContext({
-            sessionId: 's1',
-            workspaceId: 'w1',
-            sessionDir: opts.sessionDir ?? '/nonexistent-session',
-            sessionScope: 'sessions/w1/s1',
-            cwd: '/tmp',
-          }),
-        ),
-      );
+      reg.defineInstance(ISessionContext, makeSessionContext({
+        sessionId: 's1',
+        workspaceId: 'w1',
+        sessionDir,
+        sessionScope: basename(sessionDir),
+        cwd: '/tmp',
+      }));
+      reg.defineInstance(IFileSystemStorageService, new FileStorageService(dirname(sessionDir)));
+      reg.define(ISessionMediaStore, SessionMediaStoreService);
       reg.define(IAgentPromptService, AgentPromptService);
       reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
       reg.definePartialInstance(ISessionMetadata, {
@@ -185,6 +185,17 @@ describe('AgentPromptService', () => {
     const handle = await prompt.enqueue({ message: message('queued') });
     expect(prompt.abort(handle.id)).toBe(true);
     await expect(handle.completion).resolves.toMatchObject({ state: 'cancelled' });
+    expect(prompt.list().pending).toEqual([]);
+  });
+
+  it('drains queued prompts before an agent scope is disposed', async () => {
+    const { prompt } = harness();
+    await prompt.enqueue({ message: message('active') });
+    const queued = await prompt.enqueue({ message: message('queued') });
+
+    await prompt.drain(new Error('agent removed'));
+
+    await expect(queued.completion).resolves.toMatchObject({ state: 'cancelled' });
     expect(prompt.list().pending).toEqual([]);
   });
 
@@ -430,7 +441,7 @@ describe('AgentPromptService daemon media intake', () => {
     expect(prompt.list().pending.map((item) => item.id)).toEqual(['text-second']);
   });
 
-  it('settles an abort that lands while the media intake is still running', async () => {
+  it('settles and stops an abort that lands while media intake is running', async () => {
     const sessionDir = await tmpSessionDir();
     let open!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -447,9 +458,11 @@ describe('AgentPromptService daemon media intake', () => {
       ['f_slow', { name: 'slow.png', bytes: PNG_BYTES, stream: slowStream }],
     ]);
     const { prompt } = harness({ sessionDir, files });
+    const release = vi.fn(async () => undefined);
 
     const handlePromise = prompt.enqueue({
       id: 'media-abort',
+      release,
       message: {
         role: 'user',
         content: [{ type: 'image_url', imageUrl: { url: buildDaemonFileUrl('f_slow') } }],
@@ -463,8 +476,10 @@ describe('AgentPromptService daemon media intake', () => {
     await expect(handle.launched).resolves.toBeUndefined();
     await expect(handle.completion).resolves.toMatchObject({ state: 'cancelled' });
     open();
-    await vi.waitFor(async () => {
-      await expect(readFile(join(sessionDir, 'media', 'f_slow.png'))).resolves.toEqual(PNG_BYTES);
+    await prompt.drain();
+    expect(release).toHaveBeenCalledTimes(1);
+    await expect(readFile(join(sessionDir, 'media', 'f_slow.png'))).rejects.toMatchObject({
+      code: 'ENOENT',
     });
     expect(prompt.list()).toEqual({ active: undefined, pending: [] });
   });
@@ -610,9 +625,48 @@ describe('AgentPromptService daemon media intake', () => {
     expect(prompt.list().active?.id).toBe('text-after');
 
     open();
-    await vi.waitFor(async () => {
-      await expect(readFile(join(sessionDir, 'media', 'f_hung.png'))).resolves.toEqual(PNG_BYTES);
+    await prompt.drain();
+    await expect(readFile(join(sessionDir, 'media', 'f_hung.png'))).rejects.toMatchObject({
+      code: 'ENOENT',
     });
+  });
+
+  it('cancels a reserved steer when its active turn finishes during intake', async () => {
+    const sessionDir = await tmpSessionDir();
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const files = new Map([
+      ['f_slow', {
+        name: 'slow.png',
+        bytes: PNG_BYTES,
+        stream: () => Readable.from((async function* () {
+          await gate;
+          yield PNG_BYTES;
+        })()),
+      }],
+    ]);
+    const { prompt, loop } = harness({ sessionDir, files });
+
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({
+      id: 'reserved-steer',
+      message: {
+        role: 'user',
+        content: [{ type: 'image_url', imageUrl: { url: buildDaemonFileUrl('f_slow') } }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+    });
+    const steerPromise = prompt.steer([queued.id]);
+    expect(prompt.list().pending).toEqual([]);
+    loop.finishActive();
+    open();
+
+    await expect(steerPromise).rejects.toThrow(/cancelled/);
+    await expect(queued.completion).resolves.toMatchObject({ state: 'cancelled' });
+    expect(loop.launches).toEqual([0]);
+    expect(prompt.list()).toEqual({ active: undefined, pending: [] });
   });
 
   it('rejects a steer whose prompt was cleared while its intake was still running', async () => {
@@ -647,7 +701,7 @@ describe('AgentPromptService daemon media intake', () => {
     prompt.clear();
     open();
 
-    await expect(steerPromise).rejects.toThrow(/not pending/);
+    await expect(steerPromise).rejects.toThrow(/cancelled/);
     expect(queued.state).toBe('cancelled');
     await expect(queued.completion).resolves.toMatchObject({ state: 'cancelled' });
   });

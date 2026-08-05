@@ -210,6 +210,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       const { session_id } = req.params;
+      let releasePrepared: (() => Promise<void>) | undefined;
+      let handedOff = false;
       try {
         // Fail fast on stale file references before anything is resolved or
         // mutated: a bad `file_id` must not create the agent, register `main`
@@ -225,7 +227,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         // resolves them to a provider form (upload / inline / path tag) at
         // request time, so the edge no longer uploads.
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
-        const resolvedContent = await resolvePromptMediaFiles(
+        const preparedMedia = await resolvePromptMediaFiles(
           req.body.content,
           core.accessor.get(IFileService),
           core.accessor.get(IBootstrapService).cacheDir,
@@ -247,6 +249,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             },
           },
         );
+        const resolvedContent = preparedMedia.content;
+        releasePrepared = preparedMedia.release;
 
         // Media prepared successfully — only now do the overrides bind.
         let thinkingConsumed = false;
@@ -282,15 +286,21 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           eventService: core.accessor.get(IEventService),
           sessionId: session_id,
         }, promptMetadataTextFromContentParts(parts));
-        const handle = await resolved.prompt.enqueue({ message: {
-          role: 'user',
-          content: parts,
-          toolCalls: [],
-          origin: { kind: 'user' },
-        } });
+        const handle = await resolved.prompt.enqueue({
+          message: {
+            role: 'user',
+            content: parts,
+            toolCalls: [],
+            origin: { kind: 'user' },
+          },
+          release: preparedMedia.release,
+        });
+        handedOff = true;
         reply.send(okEnvelope(projectPromptHandle(handle), req.id));
       } catch (error) {
         sendMappedError(reply, req, error);
+      } finally {
+        if (!handedOff) await releasePrepared?.();
       }
     },
   );

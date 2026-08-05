@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -118,6 +119,7 @@ interface MessageDriver {
   handleUserInput(text: string): void;
   persistInputHistory(text: string): Promise<void>;
   sendQueuedMessage(session: unknown, item: QueuedMessage): void;
+  clearQueuedMessages(): void;
   getCurrentSessionId(): string;
 }
 
@@ -285,6 +287,7 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
       sessionDir: '/tmp/session-a',
       manifest: {},
     })),
+    deleteFile: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
     track: vi.fn(),
     setTelemetryContext: vi.fn(),
@@ -2494,8 +2497,13 @@ command = "vim"
     expect(transcript).not.toContain('review');
   });
 
-  it('sends a pasted video as a file:// video_url part', async () => {
-    const { driver, session } = await makeDriver();
+  it('releases a pasted video cache copy after prompt intake returns', async () => {
+    let finishPrompt!: () => void;
+    const promptSettled = new Promise<void>((resolve) => {
+      finishPrompt = resolve;
+    });
+    const session = makeSession({ prompt: vi.fn(() => promptSettled) });
+    const { driver } = await makeDriver(session);
     const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
     const dir = await mkdtemp(join(tmpdir(), 'tui-video-'));
     try {
@@ -2517,7 +2525,14 @@ command = "vim"
       expect(parts?.[0]).toEqual({ type: 'text', text: 'watch ' });
       expect(parts?.[1]?.type).toBe('video_url');
       expect(parts?.[1]?.videoUrl?.url).toMatch(/^file:\/\/.*clip\.mp4$/);
+      const stagingPath = driver.state.queuedMessages[0]?.stagingPaths?.[0]
+        ?? new URL(parts![1]!.videoUrl!.url).pathname;
+      expect(existsSync(stagingPath)).toBe(true);
+
+      finishPrompt();
+      await vi.waitFor(() => expect(existsSync(stagingPath)).toBe(false));
     } finally {
+      finishPrompt();
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -2542,9 +2557,12 @@ command = "vim"
       expect(parts?.[0]).toEqual({ type: 'text', text: 'describe ' });
       expect(parts?.[1]?.type).toBe('video_url');
       expect(parts?.[1]?.videoUrl?.url).toMatch(/^file:\/\/.*clip\.mp4$/);
+      expect(queued?.stagingPaths).toHaveLength(1);
+      expect(existsSync(queued!.stagingPaths![0]!)).toBe(true);
 
       driver.sendQueuedMessage(session, queued!);
       expect(session.prompt).toHaveBeenCalledWith(parts);
+      await vi.waitFor(() => expect(existsSync(queued!.stagingPaths![0]!)).toBe(false));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -2569,6 +2587,56 @@ command = "vim"
         imageAttachmentIds: [attachment.id],
       }),
     ]);
+  });
+
+  it('releases an image staging upload after prompt intake returns', async () => {
+    const { driver, session, harness } = await makeDriver();
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const attachment = imageStore.addImage(
+      new Uint8Array([0xaa, 0xbb]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'file-1',
+    );
+
+    driver.handleUserInput(attachment.placeholder);
+
+    expect(session.prompt).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(harness.deleteFile).toHaveBeenCalledWith('file-1'));
+    expect(attachment.fileId).toBeUndefined();
+    expect(attachment.bytes).toEqual(new Uint8Array([0xaa, 0xbb]));
+  });
+
+  it('releases every queued use of shared media when the queue is discarded', async () => {
+    const { driver, harness } = await makeDriver();
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const attachment = imageStore.addImage(
+      new Uint8Array([0xaa, 0xbb]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'file-queued',
+    );
+    driver.state.appState.streamingPhase = 'waiting';
+
+    driver.handleUserInput(`first ${attachment.placeholder}`);
+    driver.handleUserInput(`second ${attachment.placeholder}`);
+    const stagingPaths = driver.state.queuedMessages.flatMap((item) => item.stagingPaths ?? []);
+    expect(driver.state.queuedMessages).toHaveLength(2);
+    expect(stagingPaths).toHaveLength(2);
+    expect(stagingPaths.every((path) => existsSync(path))).toBe(true);
+
+    driver.clearQueuedMessages();
+
+    await vi.waitFor(() => {
+      expect(harness.deleteFile).toHaveBeenCalledWith('file-queued');
+      expect(stagingPaths.every((path) => !existsSync(path))).toBe(true);
+    });
+    expect(harness.deleteFile).toHaveBeenCalledTimes(1);
+    expect(attachment.fileId).toBeUndefined();
   });
 
   it('queues editor input instead of prompting while a turn is already streaming', async () => {
@@ -2897,6 +2965,36 @@ command = "vim"
       { type: 'text', text: 'look ' },
       { type: 'image_url', imageUrl: { url: 'data:image/png;base64,qrs=' } },
     ]);
+    expect(driver.state.queuedMessages).toEqual([]);
+  });
+
+  it('releases every queued use of shared media after a batched steer', async () => {
+    const session = makeSession();
+    const { driver, harness } = await makeDriver(session);
+    driver.state.appState.model = 'k2';
+    driver.state.appState.streamingPhase = 'waiting';
+    driver.streamingUI.setTurnId('1');
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const attachment = imageStore.addImage(
+      new Uint8Array([0xaa, 0xbb]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'file-batched',
+    );
+    driver.handleUserInput(`first ${attachment.placeholder}`);
+    driver.handleUserInput(`second ${attachment.placeholder}`);
+    expect(driver.state.queuedMessages).toHaveLength(2);
+
+    driver.state.editor.onCtrlS?.();
+
+    expect(session.steer).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(harness.deleteFile).toHaveBeenCalledWith('file-batched');
+    });
+    expect(harness.deleteFile).toHaveBeenCalledTimes(1);
+    expect(attachment.fileId).toBeUndefined();
     expect(driver.state.queuedMessages).toEqual([]);
   });
 
@@ -7009,4 +7107,3 @@ describe('transcript step and assistant folding', () => {
     expect(stripSgr(lastAssistant.render(120).join('\n'))).toContain(`msg-${cycles - 1}`);
   });
 });
-
