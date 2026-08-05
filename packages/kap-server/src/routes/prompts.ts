@@ -26,6 +26,7 @@ import {
   type PromptHandle,
   type PromptQueueSnapshot,
   ISessionContext,
+  ISessionMediaStore,
   resumeSessionById,
   ITelemetryService,
   applyPromptMetadataUpdate,
@@ -239,6 +240,10 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
               const session = await resumeSessionById(core.accessor, session_id);
               if (session === undefined) return undefined;
               return join(session.accessor.get(ISessionContext).sessionDir, 'attachments');
+            },
+            resolveMediaStore: async () => {
+              const session = await resumeSessionById(core.accessor, session_id);
+              return session?.accessor.get(ISessionMediaStore);
             },
           },
         );

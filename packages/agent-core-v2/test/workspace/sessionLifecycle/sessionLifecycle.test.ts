@@ -1840,7 +1840,7 @@ describe('SessionLifecycleService', () => {
       expect(calls.indexOf('update:fork')).toBeGreaterThan(calls.lastIndexOf('registerAgent'));
     });
 
-    it('copies blobs, plans, background tasks, and media originals into the fork', async () => {
+    it('copies blobs, plans, background tasks, media originals, and session media into the fork', async () => {
       const root = await makeTmpRoot();
       const svc = await build([
         stubPair(IBootstrapService, tmpBootstrapStub(root)),
@@ -1857,6 +1857,8 @@ describe('SessionLifecycleService', () => {
       await writeFile(join(srcDir, 'agents', 'main', 'tasks', 'bash-1', 'output.log'), 'out');
       await mkdir(join(srcDir, 'media-originals'), { recursive: true });
       await writeFile(join(srcDir, 'media-originals', 'x.png'), 'png');
+      await mkdir(join(srcDir, 'media'), { recursive: true });
+      await writeFile(join(srcDir, 'media', 'f_1.mp4'), 'mp4');
       await writeFile(join(srcDir, 'state.json'), '{"source":true}');
       await writeFile(join(srcDir, 'agents', 'main', 'wire.jsonl'), '{"type":"metadata"}\n');
       await mkdir(join(srcDir, 'logs'), { recursive: true });
@@ -1880,6 +1882,7 @@ describe('SessionLifecycleService', () => {
       await expect(readFile(join(dstDir, 'media-originals', 'x.png'), 'utf8')).resolves.toBe(
         'png',
       );
+      await expect(readFile(join(dstDir, 'media', 'f_1.mp4'), 'utf8')).resolves.toBe('mp4');
       await expect(stat(join(dstDir, 'state.json'))).rejects.toThrow();
       await expect(stat(join(dstDir, 'agents', 'main', 'wire.jsonl'))).rejects.toThrow();
       await expect(stat(join(dstDir, 'logs'))).rejects.toThrow();

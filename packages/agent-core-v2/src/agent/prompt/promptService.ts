@@ -4,7 +4,11 @@
  * Assigns prompt and message identities, serializes user prompts through an
  * active slot and FIFO, converts selected pending prompts into active-turn
  * steers, settles lifecycle handles, and keeps system input outside the prompt
- * resource model. `submit` / `submitSteer` are the wire-facing user entry
+ * resource model. Every submission first passes the `media` domain's intake
+ * normalization (`materializePromptDaemonRefs` — daemon file references
+ * materialize into the session media store, read through `IFileService`),
+ * serialized in arrival order so the async file I/O cannot reorder the FIFO.
+ * `submit` / `submitSteer` are the wire-facing user entry
  * points: they track `input_steer` through `telemetry`, persist the derived
  * title/lastPrompt through `sessionMetadata` for the main agent only
  * (publishing the live update through `event`), enqueue, and settle
@@ -24,6 +28,8 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/_base/state/stateRegistry';
 import { extractImageCompressionCaptions } from '#/agent/media/image-compress';
+import { materializePromptDaemonRefs } from '#/agent/media/promptMediaIntake';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { userCancellationReason } from '#/_base/utils/abort';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { newMessageId } from '#/agent/contextMemory/messageId';
@@ -37,6 +43,7 @@ import type { ExecutableToolResult } from '#/tool/toolContract';
 import type { ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type { ContentPart } from '#/kosong/contract/message';
+import { IFileService } from '#/app/file/fileService';
 import { IEventBus } from '#/app/event/eventBus';
 import { IEventService } from '#/app/event/event';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
@@ -101,6 +108,8 @@ export class AgentPromptService implements IAgentPromptService {
     @IWireService private readonly wire: IWireService,
     @IEventBus private readonly eventBus: IEventBus,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IFileService private readonly files: IFileService,
+    @ISessionMediaStore private readonly mediaStore: ISessionMediaStore,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @IEventService private readonly eventService: IEventService,
@@ -122,9 +131,20 @@ export class AgentPromptService implements IAgentPromptService {
     this.states.set(promptLaunchingKey, value);
   }
 
+  private mediaIntake: Promise<unknown> = Promise.resolve();
+
+  private serializeMediaIntake(content: readonly ContentPart[]): Promise<readonly ContentPart[]> {
+    const normalized = this.mediaIntake.then(() =>
+      materializePromptDaemonRefs(content, { files: this.files, mediaStore: this.mediaStore }),
+    );
+    this.mediaIntake = normalized.catch(() => undefined);
+    return normalized;
+  }
+
   async enqueue(input: PromptInput): Promise<PromptHandle> {
     const id = input.id ?? input.message.id ?? newMessageId();
-    const message = { ...input.message, id };
+    const content = await this.serializeMediaIntake(input.message.content);
+    const message = { ...input.message, id, content };
     const launchedDeferred = deferred<Turn | undefined>();
     const completionDeferred = deferred<PromptCompletion>();
     const record = {} as Record;

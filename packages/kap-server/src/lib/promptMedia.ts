@@ -35,6 +35,7 @@ import {
   decodeBase64Prefix,
   Error2,
   isModelAcceptedImageMime,
+  mediaExtensionForMime,
   normalizeImageMime,
   persistOriginalImage,
   resolveEffectiveImageMime,
@@ -43,6 +44,7 @@ import {
   type GetResult,
   type IFileService,
   type ImageCompressionTelemetry,
+  type ISessionMediaStore,
   type ITelemetryService,
 } from '@moonshot-ai/agent-core-v2';
 
@@ -54,15 +56,6 @@ import type { PromptSubmission } from '../protocol/rest-prompt';
  * `attachments` (same `MessageContent` parts, minus the text-ish kinds).
  */
 type WireContent = PromptSubmission['content'];
-
-const VIDEO_EXT_BY_MIME: Record<string, string> = {
-  'video/mp4': '.mp4',
-  'video/quicktime': '.mov',
-  'video/webm': '.webm',
-  'video/x-msvideo': '.avi',
-  'video/x-matroska': '.mkv',
-  'video/mpeg': '.mpeg',
-};
 
 /**
  * Fail fast on stale or mis-kinded file references before anything
@@ -109,6 +102,13 @@ export interface ResolvePromptMediaOptions {
    * the shared cache dir.
    */
   readonly resolveAttachmentsDir?: () => Promise<string | undefined>;
+  /**
+   * Lazily resolve the session's media store for materializing uploaded
+   * image / video bytes — the copy the model re-opens with ReadMediaFile
+   * when the media cannot reach the provider. Unavailable or failing
+   * materialization falls back to the shared cache dir.
+   */
+  readonly resolveMediaStore?: () => Promise<ISessionMediaStore | undefined>;
   /** Report an `image_compress` event per compressed prompt image. */
   readonly telemetry?: ITelemetryService;
 }
@@ -143,6 +143,15 @@ export async function resolvePromptMediaFiles(
       attachmentsDir = await options.resolveAttachmentsDir?.().catch(() => undefined);
     }
     return attachmentsDir ?? cacheDir;
+  };
+  let mediaStore: ISessionMediaStore | undefined;
+  let mediaStoreResolved = false;
+  const resolveMediaStore = async (): Promise<ISessionMediaStore | undefined> => {
+    if (!mediaStoreResolved) {
+      mediaStoreResolved = true;
+      mediaStore = await options.resolveMediaStore?.().catch(() => undefined);
+    }
+    return mediaStore;
   };
   const telemetryFor = (source: string): ImageCompressionTelemetry | undefined =>
     options.telemetry === undefined ? undefined : { client: options.telemetry, source };
@@ -326,11 +335,11 @@ export async function resolvePromptMediaFiles(
         );
         finalFile = await store.get(saved.id);
       }
-      const cachePath = await materializeUploadToCache(finalFile, cacheDir);
-      content.push({ type: 'text', text: buildMediaPathTag('image', cachePath) });
+      const mediaPath = await materializePromptMedia(finalFile, resolveMediaStore(), cacheDir);
+      content.push({ type: 'text', text: buildMediaPathTag('image', mediaPath) });
       content.push({
         type: 'image',
-        source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id, cachePath) },
+        source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id, mediaPath) },
       });
       changed = true;
       continue;
@@ -341,34 +350,52 @@ export async function resolvePromptMediaFiles(
     // `kimi-file://<id>?path=<materialized path>` reference. The engine
     // resolves it to a provider form (upload / inline / `<video path>` tag) at
     // request time, so the edge never uploads and never blocks on the provider.
-    const cachePath = await materializeUploadToCache(file, cacheDir);
+    const mediaPath = await materializePromptMedia(file, resolveMediaStore(), cacheDir);
     content.push({
       type: 'video',
-      source: { kind: 'url', url: buildKimiFileUrl(file.meta.id, cachePath) },
+      source: { kind: 'url', url: buildKimiFileUrl(file.meta.id, mediaPath) },
     });
     changed = true;
   }
   return changed ? content : input;
 }
 
-async function materializeUploadToCache(file: GetResult, cacheDir: string): Promise<string> {
-  await mkdir(cacheDir, { recursive: true });
-  const ext = extname(file.meta.name) || cacheExtensionForMime(file.meta.media_type);
-  const target = join(cacheDir, `${file.meta.id}${ext}`);
+/**
+ * Materialize an upload for the prompt's media reference: the session's media
+ * store first (the session-canonical copy the fork carries along), the shared
+ * cache dir when the store is unavailable or its write fails — a read-only
+ * session dir must not reject an otherwise-submittable prompt.
+ */
+async function materializePromptMedia(
+  file: GetResult,
+  mediaStore: Promise<ISessionMediaStore | undefined>,
+  cacheDir: string,
+): Promise<string> {
+  const store = await mediaStore;
+  if (store !== undefined) {
+    const path = await store
+      .materialize({
+        fileId: file.meta.id,
+        size: file.meta.size,
+        name: file.meta.name,
+        mimeType: file.meta.media_type,
+        stream: () => file.stream(),
+      })
+      .catch(() => undefined);
+    if (path !== undefined) return path;
+  }
+  return materializeUploadToDir(file, cacheDir);
+}
+
+async function materializeUploadToDir(file: GetResult, dir: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const ext = extname(file.meta.name) || mediaExtensionForMime(file.meta.media_type) || '.bin';
+  const target = join(dir, `${file.meta.id}${ext}`);
   const info = await stat(target).catch(() => undefined);
   if (info?.size === file.meta.size) return target;
 
   await pipeline(file.stream(), createWriteStream(target));
   return target;
-}
-
-/** MIME → cache-file extension fallback for an upload whose name has none. */
-function cacheExtensionForMime(mediaType: string): string {
-  const mime = mediaType.toLowerCase();
-  const videoExt = VIDEO_EXT_BY_MIME[mime];
-  if (videoExt !== undefined) return videoExt;
-  if (mime.startsWith('image/')) return `.${imageExtensionForMime(mime)}`;
-  return '.bin';
 }
 
 /**
