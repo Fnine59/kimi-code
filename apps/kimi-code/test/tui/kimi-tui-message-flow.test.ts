@@ -7009,3 +7009,4 @@ describe('transcript step and assistant folding', () => {
     expect(stripSgr(lastAssistant.render(120).join('\n'))).toContain(`msg-${cycles - 1}`);
   });
 });
+
