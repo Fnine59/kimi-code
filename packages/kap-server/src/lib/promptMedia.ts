@@ -26,7 +26,6 @@ import { pipeline } from 'node:stream/promises';
 
 import {
   buildDaemonFileUrl,
-  buildKimiFileUrl,
   buildMediaPathTag,
   buildImageCompressionCaption,
   buildUnsupportedImageNotice,
@@ -375,7 +374,7 @@ export async function resolvePromptMediaFiles(
       const mediaPath = await materializePromptMedia(file, resolveMediaStore(), cacheDir);
       content.push({
         type: 'video',
-        source: { kind: 'url', url: buildKimiFileUrl(file.meta.id, mediaPath) },
+        source: { kind: 'url', url: buildDaemonFileUrl(file.meta.id, mediaPath) },
       });
       changed = true;
     }
