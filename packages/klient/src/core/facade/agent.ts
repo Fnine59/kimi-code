@@ -41,7 +41,11 @@ export type AgentTaskInfo = Awaited<ReturnType<IAgentTaskService['list']>>[numbe
 export type McpServerEntry = ReturnType<IAgentMcpService['list']>[number];
 
 export interface AgentFacade {
-  prompt(input: { input: readonly ContentPart[] }): Promise<PromptLaunchResult>;
+  prompt(input: {
+    input: readonly ContentPart[];
+    disabledTools?: readonly string[];
+    promptId?: string;
+  }): Promise<PromptLaunchResult>;
   steer(input: { input: readonly ContentPart[] }): Promise<PromptLaunchResult>;
   /**
    * Activate a skill as a user-slash activation: the engine renders the skill

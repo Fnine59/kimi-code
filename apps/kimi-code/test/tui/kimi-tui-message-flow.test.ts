@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   deleteAllKittyImages,
@@ -120,6 +121,8 @@ interface MessageDriver {
   persistInputHistory(text: string): Promise<void>;
   sendQueuedMessage(session: unknown, item: QueuedMessage): void;
   clearQueuedMessages(): void;
+  closeSession(reason: string): Promise<void>;
+  setSession(session: unknown): Promise<void>;
   getCurrentSessionId(): string;
 }
 
@@ -517,7 +520,7 @@ describe('KimiTUI message flow', () => {
     driver.handleUserInput('hello');
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('hello');
+      expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
     expect(harness.createSession).toHaveBeenCalledTimes(1);
     expect(harness.createSession).toHaveBeenCalledWith({
@@ -680,7 +683,7 @@ describe('KimiTUI message flow', () => {
     // The prompt continuation starts its turn first; /new (idle-only) must
     // then be blocked instead of switching away from the active session.
     await vi.waitFor(() => {
-      expect(lazySession.prompt).toHaveBeenCalledWith('hello');
+      expect(lazySession.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
       expect(stripSgr(renderTranscript(driver))).toContain('Cannot /new while streaming');
     });
     expect(harness.createSession).toHaveBeenCalledTimes(1);
@@ -732,7 +735,7 @@ describe('KimiTUI message flow', () => {
     // The prompt starts its turn first; the switch must then be rejected
     // instead of being silently overwritten by the session assembly.
     await vi.waitFor(() => {
-      expect(lazySession.prompt).toHaveBeenCalledWith('hello');
+      expect(lazySession.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
       expect(stripSgr(renderTranscript(driver))).toContain('Cannot switch models while streaming');
     });
     expect(lazySession.setThinking).not.toHaveBeenCalled();
@@ -815,7 +818,7 @@ describe('KimiTUI message flow', () => {
     // The prompt starts its turn first; the switch must then be rejected
     // instead of being overwritten when the lazy creation completes.
     await vi.waitFor(() => {
-      expect(lazySession.prompt).toHaveBeenCalledWith('hello');
+      expect(lazySession.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
       expect(stripSgr(renderTranscript(driver))).toContain('Cannot switch sessions while streaming');
     });
     expect(harness.resumeSession).not.toHaveBeenCalled();
@@ -841,7 +844,7 @@ describe('KimiTUI message flow', () => {
     driver.handleUserInput('hello');
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('hello');
+      expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
     expect(harness.createSession).toHaveBeenCalledWith(
       expect.objectContaining({ model: 'k2', thinking: 'high' }),
@@ -876,7 +879,7 @@ describe('KimiTUI message flow', () => {
     driver.handleUserInput('hello');
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('hello');
+      expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
     expect(harness.createSession).toHaveBeenCalledWith(
       expect.objectContaining({ planMode: undefined }),
@@ -895,7 +898,7 @@ describe('KimiTUI message flow', () => {
     driver.handleUserInput('hello');
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('hello');
+      expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
     expect(harness.createSession).toHaveBeenCalledWith(
       expect.objectContaining({ planMode: true }),
@@ -919,7 +922,7 @@ describe('KimiTUI message flow', () => {
     driver.handleUserInput('ls');
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('hello');
+      expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
     // The shell command must be queued, not run concurrently with the prompt.
     expect(runShellCommand).not.toHaveBeenCalled();
@@ -976,7 +979,7 @@ describe('KimiTUI message flow', () => {
     driver.handleUserInput('/skill:my-skill');
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('hello');
+      expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
     // The skill activation must be blocked, not run concurrently with the
     // prompt's turn.
@@ -1266,7 +1269,7 @@ describe('KimiTUI message flow', () => {
     driver.handleUserInput('hello');
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('hello');
+      expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
     // The engine applies the config default at create; repeating --plan would
     // re-enter plan mode and throw, so it must not be passed again.
@@ -1315,7 +1318,7 @@ describe('KimiTUI message flow', () => {
     driver.handleUserInput('hello');
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('hello');
+      expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
     expect(harness.createSession).toHaveBeenCalledWith(
       expect.objectContaining({ permission: 'yolo' }),
@@ -2103,7 +2106,7 @@ command = "vim"
 
     driver.handleUserInput('hello');
 
-    expect(session.prompt).toHaveBeenCalledWith('hello');
+    expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     expect(driver.state.appState.streamingPhase).not.toBe('idle');
     expect(driver.state.appState.streamingPhase).toBe('waiting');
     expect(driver.state.livePane.mode).toBe('waiting');
@@ -2497,7 +2500,8 @@ command = "vim"
     expect(transcript).not.toContain('review');
   });
 
-  it('keeps a pasted video cache copy until the consuming turn ends', async () => {
+  it('keeps a pasted video cache copy for history until the session closes', async () => {
+    process.env['KIMI_CODE_HOME'] = await makeTempHome();
     let finishPrompt!: () => void;
     const promptSettled = new Promise<void>((resolve) => {
       finishPrompt = resolve;
@@ -2539,6 +2543,16 @@ command = "vim"
         { type: 'turn.ended', agentId: 'main', turnId: 1, reason: 'completed' } as Event,
         () => {},
       );
+      // The cache copy survives the consuming turn: a v1 degrade persists a
+      // `<video path>` tag carrying this exact path into history, and later
+      // turns re-open it with ReadMediaFile.
+      await new Promise((resolve) => {
+        setTimeout(resolve, 20);
+      });
+      expect(existsSync(stagingPath)).toBe(true);
+
+      // Session close retires it.
+      await driver.closeSession('test');
       await vi.waitFor(() => {
         expect(existsSync(stagingPath)).toBe(false);
       });
@@ -2548,7 +2562,50 @@ command = "vim"
     }
   });
 
+  it('releases a retired video cache copy when switching sessions', async () => {
+    process.env['KIMI_CODE_HOME'] = await makeTempHome();
+    let finishPrompt!: () => void;
+    const promptSettled = new Promise<void>((resolve) => {
+      finishPrompt = resolve;
+    });
+    const session = makeSession({ prompt: vi.fn(() => promptSettled) });
+    const { driver } = await makeDriver(session);
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const dir = await mkdtemp(join(tmpdir(), 'tui-video-switch-'));
+    try {
+      const srcVideo = join(dir, 'clip.mp4');
+      await writeFile(srcVideo, 'video-bytes');
+      const attachment = imageStore.addVideo('video/mp4', srcVideo);
+      driver.handleUserInput(attachment.placeholder);
+      const parts = vi.mocked(session.prompt).mock.calls[0]?.[0] as
+        | Array<{ type: string; videoUrl?: { url: string } }>
+        | undefined;
+      const videoPart = parts?.find((part) => part.type === 'video_url');
+      const stagingPath = fileURLToPath(videoPart?.videoUrl?.url ?? 'file:///missing');
+      expect(existsSync(stagingPath)).toBe(true);
+      driver.sessionEventHandler.handleEvent(
+        { type: 'turn.started', agentId: 'main', turnId: 1, origin: { kind: 'user' } } as Event,
+        () => {},
+      );
+      finishPrompt();
+      driver.sessionEventHandler.handleEvent(
+        { type: 'turn.ended', agentId: 'main', turnId: 1, reason: 'completed' } as Event,
+        () => {},
+      );
+
+      const nextSession = makeSession({ id: 'ses-2' });
+      await driver.setSession(nextSession);
+      await vi.waitFor(() => {
+        expect(existsSync(stagingPath)).toBe(false);
+      });
+      await driver.closeSession('test');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('queues a pasted video (file:// part) while a turn is streaming', async () => {
+    process.env['KIMI_CODE_HOME'] = await makeTempHome();
     const session = makeSession();
     const { driver } = await makeDriver(session);
     const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
@@ -2572,7 +2629,7 @@ command = "vim"
       expect(existsSync(queued!.stagingPaths![0]!)).toBe(true);
 
       driver.sendQueuedMessage(session, queued!);
-      expect(session.prompt).toHaveBeenCalledWith(parts);
+      expect(vi.mocked(session.prompt).mock.calls[0]?.[0]).toEqual(parts);
       driver.sessionEventHandler.handleEvent(
         { type: 'turn.started', agentId: 'main', turnId: 1, origin: { kind: 'user' } } as Event,
         () => {},
@@ -2581,6 +2638,13 @@ command = "vim"
         { type: 'turn.ended', agentId: 'main', turnId: 1, reason: 'completed' } as Event,
         () => {},
       );
+      // Turn end keeps the cache copy (persisted history references it);
+      // session close retires it.
+      await new Promise((resolve) => {
+        setTimeout(resolve, 20);
+      });
+      expect(existsSync(queued!.stagingPaths![0]!)).toBe(true);
+      await driver.closeSession('test');
       await vi.waitFor(() => {
         expect(existsSync(queued!.stagingPaths![0]!)).toBe(false);
       });
@@ -2597,10 +2661,15 @@ command = "vim"
 
     driver.handleUserInput(`describe ${attachment.placeholder}`);
 
-    expect(session.prompt).toHaveBeenCalledWith([
-      { type: 'text', text: 'describe ' },
-      { type: 'image_url', imageUrl: { url: 'data:image/png;base64,qrs=' } },
-    ]);
+    expect(session.prompt).toHaveBeenCalledWith(
+      [
+        { type: 'text', text: 'describe ' },
+        { type: 'image_url', imageUrl: { url: 'data:image/png;base64,qrs=' } },
+      ],
+      // Staged media rides with a client-chosen prompt id so the consuming
+      // turn's `turn.started` can bind the lease exactly.
+      { promptId: expect.any(String) },
+    );
     expect(driver.state.transcriptEntries).toEqual([
       expect.objectContaining({
         kind: 'user',
@@ -2641,6 +2710,45 @@ command = "vim"
     expect(attachment.bytes).toEqual(new Uint8Array([0xaa, 0xbb]));
   });
 
+  it('releases staged media exactly once when the prompt dispatch rejects', async () => {
+    const session = makeSession({
+      prompt: vi.fn(async () => {
+        throw new Error('session closed');
+      }),
+    });
+    const { driver, harness } = await makeDriver(session);
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const attachment = imageStore.addImage(
+      new Uint8Array([0xaa, 0xbb]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'file-reject',
+    );
+
+    driver.handleUserInput(attachment.placeholder);
+
+    await vi.waitFor(() => {
+      expect(driver.state.appState.streamingPhase).toBe('idle');
+    });
+    expect(stripSgr(renderTranscript(driver))).toContain('Failed to send: session closed');
+    expect(harness.deleteFile).toHaveBeenCalledWith('file-reject');
+
+    // The released lease must not be claimed or deleted again by later turn
+    // events or by session close.
+    driver.sessionEventHandler.handleEvent(
+      { type: 'turn.started', agentId: 'main', turnId: 1, origin: { kind: 'user' } } as Event,
+      () => {},
+    );
+    driver.sessionEventHandler.handleEvent(
+      { type: 'turn.ended', agentId: 'main', turnId: 1, reason: 'completed' } as Event,
+      () => {},
+    );
+    await driver.closeSession('test');
+    expect(harness.deleteFile).toHaveBeenCalledTimes(1);
+  });
+
   it('releases goal-steered staging media when the running goal turn ends', async () => {
     const { driver, session, harness } = await makeDriver();
     const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
@@ -2679,6 +2787,7 @@ command = "vim"
   });
 
   it('releases every queued use of shared media when the queue is discarded', async () => {
+    process.env['KIMI_CODE_HOME'] = await makeTempHome();
     const { driver, harness } = await makeDriver();
     const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
     const attachment = imageStore.addImage(
@@ -2695,14 +2804,15 @@ command = "vim"
     driver.handleUserInput(`second ${attachment.placeholder}`);
     const stagingPaths = driver.state.queuedMessages.flatMap((item) => item.stagingPaths ?? []);
     expect(driver.state.queuedMessages).toHaveLength(2);
-    expect(stagingPaths).toHaveLength(2);
-    expect(stagingPaths.every((path) => existsSync(path))).toBe(true);
+    // An uploaded image stages no local cache copy — the engine's intake
+    // materializes the session copy — so only the daemon upload lease rides
+    // with each queued message.
+    expect(stagingPaths).toHaveLength(0);
 
     driver.clearQueuedMessages();
 
     await vi.waitFor(() => {
       expect(harness.deleteFile).toHaveBeenCalledWith('file-queued');
-      expect(stagingPaths.every((path) => !existsSync(path))).toBe(true);
     });
     expect(harness.deleteFile).toHaveBeenCalledTimes(1);
     expect(attachment.fileId).toBeUndefined();
@@ -2836,7 +2946,7 @@ command = "vim"
     );
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('after the turn');
+      expect(session.prompt).toHaveBeenCalledWith('after the turn', { promptId: undefined });
     });
     expect(session.steer).not.toHaveBeenCalled();
   });
@@ -3019,10 +3129,15 @@ command = "vim"
 
     driver.sendQueuedMessage(session, queued!);
 
-    expect(session.prompt).toHaveBeenCalledWith([
-      { type: 'text', text: 'describe ' },
-      { type: 'image_url', imageUrl: { url: 'data:image/png;base64,qrs=' } },
-    ]);
+    expect(session.prompt).toHaveBeenCalledWith(
+      [
+        { type: 'text', text: 'describe ' },
+        { type: 'image_url', imageUrl: { url: 'data:image/png;base64,qrs=' } },
+      ],
+      // Staged media rides with a client-chosen prompt id so the consuming
+      // turn's `turn.started` can bind the lease exactly.
+      { promptId: expect.any(String) },
+    );
   });
 
   it('steers editor image input as media parts', async () => {
@@ -4412,7 +4527,7 @@ command = "vim"
     resolveInit?.();
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('apply after init');
+      expect(session.prompt).toHaveBeenCalledWith('apply after init', { promptId: undefined });
     });
     expect(driver.state.queuedMessages).toEqual([]);
   });

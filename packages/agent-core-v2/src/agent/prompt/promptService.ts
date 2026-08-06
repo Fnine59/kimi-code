@@ -6,7 +6,9 @@
  * steers, settles lifecycle handles, and keeps system input outside the prompt
  * resource model. Daemon file references in submissions are normalized through
  * the `media` domain's intake (`materializePromptDaemonRefs` — materialize
- * into the session media store, read through `IFileService`). `submit` /
+ * into the session media store and author the paired media-path tag, read
+ * through `IFileService`, falling back to the shared cache dir from
+ * `bootstrap` when the session dir is not writable). `submit` /
  * `submitSteer` are the wire-facing user entry
  * points: they track `input_steer` through `telemetry`, persist the derived
  * title/lastPrompt through `sessionMetadata` for the main agent only
@@ -43,6 +45,7 @@ import type { ExecutableToolResult } from '#/tool/toolContract';
 import type { ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type { ContentPart } from '#/kosong/contract/message';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFileService } from '#/app/file/fileService';
 import { IEventBus } from '#/app/event/eventBus';
 import { IEventService } from '#/app/event/event';
@@ -122,6 +125,7 @@ export class AgentPromptService extends Disposable implements IAgentPromptServic
     @IAgentStateService private readonly states: IAgentStateService,
     @IFileService private readonly files: IFileService,
     @ISessionMediaStore private readonly mediaStore: ISessionMediaStore,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @IEventService private readonly eventService: IEventService,
@@ -150,6 +154,7 @@ export class AgentPromptService extends Disposable implements IAgentPromptServic
     const intake = materializePromptDaemonRefs(record.message.content, {
       files: this.files,
       mediaStore: this.mediaStore,
+      fallbackDir: this.bootstrap.cacheDir,
       signal: record.intakeController.signal,
     }).then((content) => {
       if (record.intakeController.signal.aborted) return;

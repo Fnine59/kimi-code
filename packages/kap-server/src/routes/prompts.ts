@@ -24,7 +24,6 @@ import {
   type PromptHandle,
   type PromptQueueSnapshot,
   ISessionContext,
-  ISessionMediaStore,
   resumeSessionById,
   ITelemetryService,
   applyPromptMetadataUpdate,
@@ -222,10 +221,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
 
         // Media resolution runs BEFORE any control mutation, so a failed
         // submission leaves the session's controls untouched. Prompt videos
-        // and uploaded images are materialized to a local copy and carried
-        // into context as an internal `kimi-file://` reference; the engine
-        // resolves them to a provider form (upload / inline / path tag) at
-        // request time, so the edge no longer uploads.
+        // and uploaded images are carried into context as bare internal
+        // `kimi-file://` references; the engine's prompt intake materializes
+        // the session copy, authors the paired media-path tag, and resolves
+        // them to a provider form (upload / inline / path tag) at request
+        // time, so the edge no longer uploads.
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
         preparedMedia = await resolvePromptMediaFiles(
           req.body.content,
@@ -242,10 +242,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
               const session = await resumeSessionById(core.accessor, session_id);
               if (session === undefined) return undefined;
               return join(session.accessor.get(ISessionContext).sessionDir, 'attachments');
-            },
-            resolveMediaStore: async () => {
-              const session = await resumeSessionById(core.accessor, session_id);
-              return session?.accessor.get(ISessionMediaStore);
             },
           },
         );
@@ -286,6 +282,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           sessionId: session_id,
         }, promptMetadataTextFromContentParts(parts));
         const handle = await resolved.prompt.enqueue({
+          id: req.body.prompt_id,
           message: {
             role: 'user',
             content: parts,

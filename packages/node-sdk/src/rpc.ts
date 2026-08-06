@@ -73,6 +73,17 @@ const MAIN_AGENT_ID = 'main';
 export interface SessionPromptRpcInput {
   readonly sessionId: string;
   readonly input: PromptInput;
+  /**
+   * Client-managed session tool denylist (full-replace semantics), forwarded
+   * to engines with profile tool gating. Omit to keep the persisted value;
+   * `[]` clears the client portion.
+   */
+  readonly disabledTools?: readonly string[];
+  /**
+   * Client-chosen prompt record id, echoed on the consuming turn's
+   * `turn.started` (`promptId`). Honored by the v2 RPC client only.
+   */
+  readonly promptId?: string;
 }
 
 export interface SessionIdRpcInput {
