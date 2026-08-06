@@ -115,12 +115,12 @@ export interface ResolvePromptMediaOptions {
 export interface PromptMediaPreparation {
   readonly content: WireContent;
   /**
-   * Delete the transient daemon uploads this preparation created (the
-   * compressed re-save). Call on failure, or hand the prompt off to the
-   * engine with it so the uploads are cleaned up once the engine's intake
-   * has materialized its own session-owned copies.
+   * Delete the daemon uploads this preparation created (the compressed
+   * re-save). Failure rollback only: once a submission reaches the engine,
+   * client read models project these upload ids, so they must stay
+   * retrievable like any client upload.
    */
-  readonly release: () => Promise<void>;
+  readonly discard: () => Promise<void>;
 }
 
 /**
@@ -136,10 +136,10 @@ export async function resolvePromptMediaFiles(
   options: ResolvePromptMediaOptions = {},
 ): Promise<PromptMediaPreparation> {
   const ownedFileIds = new Set<string>();
-  let released = false;
-  const release = async (): Promise<void> => {
-    if (released) return;
-    released = true;
+  let discarded = false;
+  const discard = async (): Promise<void> => {
+    if (discarded) return;
+    discarded = true;
     await Promise.all(
       [...ownedFileIds].map((fileId) => store.delete(fileId).catch(() => undefined)),
     );
@@ -345,14 +345,19 @@ export async function resolvePromptMediaFiles(
         // resolves at request time, preceded by the `<image path>` tag text so
         // the model always has a path it can re-open. When compression changed
         // the bytes, the reference addresses a NEW daemon upload holding the
-        // final bytes — the client's original upload stays untouched.
+        // final bytes — the client's original upload stays untouched. The
+        // re-save is an ordinary upload (no expiry): read models project its
+        // id, so it must keep serving bytes for the session's history.
         let finalFile = file;
         if (compressed.changed) {
           const saved = await store.save(
             Readable.from(Buffer.from(compressed.data)),
             compressedUploadName(file.meta.name, compressed.mimeType),
-            { mimeType: compressed.mimeType, expiresInSec: 60 * 60 },
+            { mimeType: compressed.mimeType },
           );
+          // Owned until the body reaches the engine: a preparation failure
+          // rolls the re-save back (the outer catch), a successful submission
+          // keeps it alive.
           ownedFileIds.add(saved.id);
           finalFile = await store.get(saved.id);
         }
@@ -378,9 +383,9 @@ export async function resolvePromptMediaFiles(
       });
       changed = true;
     }
-    return { content: changed ? content : input, release };
+    return { content: changed ? content : input, discard };
   } catch (error) {
-    await release();
+    await discard();
     throw error;
   }
 }

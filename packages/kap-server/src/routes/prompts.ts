@@ -53,6 +53,7 @@ import {
   assertPromptFileRefs,
   contentToCoreParts,
   resolvePromptMediaFiles,
+  type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
@@ -209,8 +210,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       const { session_id } = req.params;
-      let releasePrepared: (() => Promise<void>) | undefined;
-      let handedOff = false;
+      let preparedMedia: PromptMediaPreparation | undefined;
+      let enqueued = false;
       try {
         // Fail fast on stale file references before anything is resolved or
         // mutated: a bad `file_id` must not create the agent, register `main`
@@ -226,7 +227,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         // resolves them to a provider form (upload / inline / path tag) at
         // request time, so the edge no longer uploads.
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
-        const preparedMedia = await resolvePromptMediaFiles(
+        preparedMedia = await resolvePromptMediaFiles(
           req.body.content,
           core.accessor.get(IFileService),
           core.accessor.get(IBootstrapService).cacheDir,
@@ -249,7 +250,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           },
         );
         const resolvedContent = preparedMedia.content;
-        releasePrepared = preparedMedia.release;
 
         // Media prepared successfully — only now do the overrides bind.
         let thinkingConsumed = false;
@@ -292,14 +292,16 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             toolCalls: [],
             origin: { kind: 'user' },
           },
-          release: preparedMedia.release,
         });
-        handedOff = true;
+        enqueued = true;
         reply.send(okEnvelope(projectPromptHandle(handle), req.id));
       } catch (error) {
+        // A submission that failed before the engine took the prompt projected
+        // no upload ids to the client — roll back the uploads the preparation
+        // created. After a successful enqueue the compressed re-save must stay
+        // retrievable: read models project its id.
+        if (!enqueued) await preparedMedia?.discard();
         sendMappedError(reply, req, error);
-      } finally {
-        if (!handedOff) await releasePrepared?.();
       }
     },
   );
