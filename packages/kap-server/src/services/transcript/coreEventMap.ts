@@ -326,7 +326,7 @@ export class AgentTranscriptProjector {
           attachmentId: `${turnId}.att${attachmentIds.length + 1}`,
           mediaType: `${input.kind}/*`,
           name: input.name,
-          source: { kind: 'file', fileId: input.fileId },
+          source: { kind: 'session_media', fileId: input.fileId },
         };
         ops.push({ op: 'attachment.upsert', attachment });
         attachmentIds.push(attachment.attachmentId);

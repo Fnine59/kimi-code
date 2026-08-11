@@ -2,13 +2,13 @@
  * `media` domain — `ISessionMediaStore` implementation.
  *
  * Materializes and reads session-canonical media through the `storage` byte
- * backend, addressed by `sessionContext`, with the shared cache as a fallback
+ * backend, persists download metadata through the atomic-document store, and
+ * addresses both through `sessionContext`; the shared cache remains a fallback
  * when the session media directory is unavailable. Filesystem deployments
  * expose an absolute host path for model readback; non-filesystem deployments
- * retain the canonical bytes without inventing one. Every entry point rejects
- * ids that are not minted upload ids (`isFileId`) — the id becomes a storage
- * key here, so an unvalidated id would be a path-traversal vector. Bound at
- * Session scope.
+ * retain canonical bytes without inventing one. Every entry point rejects ids
+ * that are not minted upload ids (`isFileId`) before using them as storage
+ * keys. Bound at Session scope.
  */
 
 import { extname } from 'node:path';
@@ -16,11 +16,28 @@ import { extname } from 'node:path';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { isFileId } from '#/app/file/fileService';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 
-import { mediaExtensionForMime } from './mediaRef';
-import { ISessionMediaStore, type SessionMediaMaterializeInput } from './sessionMediaStore';
+import {
+  AUDIO_MIME_BY_SUFFIX,
+  IMAGE_MIME_BY_SUFFIX,
+  mediaExtensionForMime,
+  VIDEO_MIME_BY_SUFFIX,
+} from './mediaRef';
+import {
+  ISessionMediaStore,
+  type SessionMediaFile,
+  type SessionMediaMaterializeInput,
+} from './sessionMediaStore';
+
+interface SessionMediaMetadata {
+  readonly version: 1;
+  readonly key: string;
+  readonly name: string;
+  readonly mediaType: string;
+}
 
 export class SessionMediaStoreService implements ISessionMediaStore {
   declare readonly _serviceBrand: undefined;
@@ -30,6 +47,7 @@ export class SessionMediaStoreService implements ISessionMediaStore {
   constructor(
     @ISessionContext sessionContext: ISessionContext,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
+    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
     @IBootstrapService bootstrap: IBootstrapService,
   ) {
     this.scope = sessionContext.scope('media');
@@ -65,6 +83,25 @@ export class SessionMediaStoreService implements ISessionMediaStore {
     return data === undefined ? undefined : { data, name: key };
   }
 
+  async open(fileId: string): Promise<SessionMediaFile | undefined> {
+    if (!isFileId(fileId)) return undefined;
+    const storedMetadata = await this.documents.get<unknown>(this.scope, this.metadataKey(fileId));
+    const metadata = this.isMetadataFor(storedMetadata, fileId) ? storedMetadata : undefined;
+    const key =
+      metadata !== undefined && (await this.storage.size(this.scope, metadata.key)) !== undefined
+        ? metadata.key
+        : await this.findKey(fileId, undefined);
+    if (key === undefined) return undefined;
+    const size = await this.storage.size(this.scope, key);
+    if (size === undefined) return undefined;
+    return {
+      name: metadata?.name ?? key,
+      mediaType: metadata?.mediaType ?? this.mediaTypeForKey(key),
+      size,
+      stream: (range) => this.storage.readStream(this.scope, key, range),
+    };
+  }
+
   async materialize(input: SessionMediaMaterializeInput): Promise<string | undefined> {
     return this.materializeAt(this.scope, input);
   }
@@ -91,11 +128,49 @@ export class SessionMediaStoreService implements ISessionMediaStore {
         signal: input.signal,
       });
     }
+    if (scope === this.scope) {
+      await this.documents.set(this.scope, this.metadataKey(input.fileId), {
+        version: 1,
+        key,
+        name: input.name,
+        mediaType: input.mimeType,
+      });
+    }
     return this.storage.pathFor(scope, key);
   }
 
   private keyFor(fileId: string, ext: string): string {
     return `${fileId}${ext}`;
+  }
+
+  private metadataKey(fileId: string): string {
+    return `meta/${fileId}.json`;
+  }
+
+  private isMetadataFor(value: unknown, fileId: string): value is SessionMediaMetadata {
+    if (typeof value !== 'object' || value === null) return false;
+    const candidate = value as Partial<SessionMediaMetadata>;
+    return (
+      candidate.version === 1 &&
+      typeof candidate.key === 'string' &&
+      (candidate.key === fileId || candidate.key.startsWith(`${fileId}.`)) &&
+      !candidate.key.includes('/') &&
+      !candidate.key.includes('\\') &&
+      typeof candidate.name === 'string' &&
+      candidate.name.length > 0 &&
+      typeof candidate.mediaType === 'string' &&
+      candidate.mediaType.length > 0
+    );
+  }
+
+  private mediaTypeForKey(key: string): string {
+    const ext = extname(key).toLowerCase();
+    return (
+      IMAGE_MIME_BY_SUFFIX[ext] ??
+      VIDEO_MIME_BY_SUFFIX[ext] ??
+      AUDIO_MIME_BY_SUFFIX[ext] ??
+      'application/octet-stream'
+    );
   }
 
   private async findKey(fileId: string, hintPath: string | undefined): Promise<string | undefined> {

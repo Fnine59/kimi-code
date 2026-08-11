@@ -1,4 +1,5 @@
 import { createDecorator } from '#/_base/di/instantiation';
+import type { IDisposable } from '#/_base/di/lifecycle';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import type { ContentPart } from '#/kosong/contract/message';
@@ -58,6 +59,21 @@ export interface SteerPayload {
 
 export interface PromptLaunchResult {
   readonly turn_id: number;
+}
+
+export interface PromptReservation extends IDisposable {
+  readonly id: string;
+  submit(message: ContextMessage): Promise<PromptHandle>;
+}
+
+export const promptAdmission = Symbol('promptAdmission');
+
+type PromptAdmissionHook = (promptId?: string) => PromptReservation;
+
+export function reservePrompt(service: IAgentPromptService, promptId?: string): PromptReservation {
+  return (service as IAgentPromptService & { [promptAdmission]: PromptAdmissionHook })[
+    promptAdmission
+  ](promptId);
 }
 
 export interface IAgentPromptService {

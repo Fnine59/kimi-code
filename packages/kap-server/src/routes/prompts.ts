@@ -23,6 +23,8 @@ import {
   type ContentPart,
   type PromptHandle,
   type PromptQueueSnapshot,
+  type PromptReservation,
+  reservePrompt,
   ISessionContext,
   resumeSessionById,
   ITelemetryService,
@@ -201,6 +203,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         [ErrorCode.AUTH_TOKEN_UNAUTHORIZED]: { detailsSchema: authProviderDetailsSchema },
         [ErrorCode.AUTH_MODEL_NOT_RESOLVED]: { detailsSchema: authModelDetailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
+        [ErrorCode.PROMPT_ID_CONFLICT]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
       },
       description: 'Submit a prompt to a session',
@@ -210,6 +213,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     async (req, reply) => {
       const { session_id } = req.params;
       let preparedMedia: PromptMediaPreparation | undefined;
+      let reservation: PromptReservation | undefined;
       let enqueued = false;
       try {
         // Fail fast on stale file references before anything is resolved or
@@ -217,6 +221,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         // in session metadata, or touch the session's controls.
         await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));
         const resolved = await resolvePrompt(core, session_id, req.body.agent_id);
+        reservation = reservePrompt(resolved.prompt, req.body.prompt_id);
         await resolved.auth.ensureReady();
 
         // Media resolution runs BEFORE any control mutation, so a failed
@@ -281,14 +286,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           eventService: core.accessor.get(IEventService),
           sessionId: session_id,
         }, promptMetadataTextFromContentParts(parts));
-        const handle = await resolved.prompt.enqueue({
-          id: req.body.prompt_id,
-          message: {
-            role: 'user',
-            content: parts,
-            toolCalls: [],
-            origin: { kind: 'user' },
-          },
+        const handle = await reservation.submit({
+          role: 'user',
+          content: parts,
+          toolCalls: [],
+          origin: { kind: 'user' },
         });
         enqueued = true;
         reply.send(okEnvelope(projectPromptHandle(handle), req.id));
@@ -299,6 +301,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         // retrievable: read models project its id.
         if (!enqueued) await preparedMedia?.discard();
         sendMappedError(reply, req, error);
+      } finally {
+        reservation?.dispose();
       }
     },
   );
@@ -427,6 +431,9 @@ function sendMappedError(
         return;
       case 'prompt.not_found':
         reply.send(errEnvelope(ErrorCode.PROMPT_NOT_FOUND, err.message, requestId, err.stack));
+        return;
+      case 'prompt.id_conflict':
+        reply.send(errEnvelope(ErrorCode.PROMPT_ID_CONFLICT, err.message, requestId, err.stack));
         return;
       case 'session.busy':
         reply.send(errEnvelope(ErrorCode.SESSION_BUSY, err.message, requestId, err.stack));

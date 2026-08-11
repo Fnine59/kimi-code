@@ -11,6 +11,7 @@ import {
   IBootstrapService,
   IFileService,
   ISessionContext,
+  ISessionMetadata,
   closeSessionById,
   getLiveSessionById,
 } from '@moonshot-ai/agent-core-v2';
@@ -254,6 +255,37 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(submitted.body.code).toBe(0);
     expect(submitted.body.data.prompt_id).toBe('submission-1');
     expect(submitted.body.data.user_message_id).toBe('submission-1');
+  });
+
+  it('rejects a reused prompt_id live and after cold resume without changing metadata', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+
+    const first = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'first prompt' }],
+      prompt_id: 'submission-1',
+    });
+    expect(first.body.code).toBe(0);
+
+    const duplicate = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'must not become metadata' }],
+      prompt_id: 'submission-1',
+    });
+    expect(duplicate.body.code).toBe(40923);
+
+    const session = getLiveSessionById(server!.core.accessor, id);
+    expect((await session!.accessor.get(ISessionMetadata).read()).lastPrompt).toBe('first prompt');
+
+    await closeSessionById(server!.core.accessor, id);
+    expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+
+    const afterResume = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'must not survive a cold resume' }],
+      prompt_id: 'submission-1',
+    });
+    expect(afterResume.body.code).toBe(40923);
+    const resumed = getLiveSessionById(server!.core.accessor, id);
+    expect((await resumed!.accessor.get(ISessionMetadata).read()).lastPrompt).toBe('first prompt');
   });
 
   it('rejects a stale file reference without creating the agent or mutating the model', async () => {

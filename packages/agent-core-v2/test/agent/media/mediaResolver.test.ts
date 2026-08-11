@@ -129,6 +129,7 @@ function stubMediaStore(sessionDir = '/nonexistent-session'): ISessionMediaStore
       return own === undefined ? hint : canonical;
     },
     read: async () => undefined,
+    open: async () => undefined,
     materialize: async () => {
       throw new Error('unused');
     },

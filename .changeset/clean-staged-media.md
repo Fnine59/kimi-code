@@ -3,4 +3,4 @@
 "@moonshot-ai/kimi-code-sdk": patch
 ---
 
-Clean up staged image and video uploads across prompt submission, cancellation, and queue cleanup paths, with daemon-side expiry and deletion support.
+Keep pasted image and video attachments available in session history while cleaning up temporary uploads across prompt submission, cancellation, and queue cleanup paths.

@@ -14,8 +14,10 @@ import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { SessionMediaStoreService } from '#/agent/media/sessionMediaStoreService';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 
@@ -51,6 +53,7 @@ describe('SessionMediaStoreService', () => {
         }));
         reg.defineInstance(IBootstrapService, stubBootstrap(homeDir));
         reg.defineInstance(IFileSystemStorageService, new FileStorageService(homeDir));
+        reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore);
         reg.define(ISessionMediaStore, SessionMediaStoreService);
       },
     });
@@ -151,6 +154,31 @@ describe('SessionMediaStoreService', () => {
     });
   });
 
+  it('opens canonical media with its persisted download metadata', async () => {
+    await store.materialize(input({ name: 'original clip.mp4', mimeType: 'video/mp4' }));
+
+    const file = await store.open('f_1');
+
+    expect(file).toMatchObject({
+      name: 'original clip.mp4',
+      mediaType: 'video/mp4',
+      size: BYTES.length,
+    });
+    expect(file === undefined ? undefined : Buffer.from(await collect(file.stream()))).toEqual(BYTES);
+  });
+
+  it('streams only the requested canonical byte range', async () => {
+    await store.materialize(input());
+
+    const file = await store.open('f_1');
+
+    expect(
+      file === undefined
+        ? undefined
+        : Buffer.from(await collect(file.stream({ start: 2, end: 6 }))),
+    ).toEqual(BYTES.subarray(2, 7));
+  });
+
   it('resolves the display path to the canonical copy, else the hint, else undefined', async () => {
     const target = await store.materialize(input());
     await expect(store.resolveDisplayPath('f_1', '/stale/elsewhere.mp4')).resolves.toBe(target);
@@ -205,6 +233,7 @@ it('retains canonical bytes without inventing a path for a non-filesystem backen
       }));
       reg.defineInstance(IBootstrapService, stubBootstrap('/unused-home'));
       reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+      reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore);
       reg.define(ISessionMediaStore, SessionMediaStoreService);
     },
   });
@@ -221,3 +250,9 @@ it('retains canonical bytes without inventing a path for a non-filesystem backen
   expect(canonical === undefined ? undefined : Buffer.from(canonical.data)).toEqual(BYTES);
   disposables.dispose();
 });
+
+async function collect(source: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of source) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}

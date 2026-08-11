@@ -60,11 +60,13 @@ import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetad
 
 import {
   IAgentPromptService,
+  promptAdmission,
   type PromptCompletion,
   type PromptHandle,
   type PromptInput,
   type PromptLaunchResult,
   type PromptPayload,
+  type PromptReservation,
   type PromptQueueSnapshot,
   type PromptSnapshot,
   type PromptState,
@@ -72,6 +74,7 @@ import {
   type SteerPayload,
 } from './prompt';
 import { promptMetadataTextFromContentParts } from './promptMetadataText';
+import { promptAccepted, PromptAdmissionModel } from './promptOps';
 import { PromptStepRequest, RetryStepRequest, SteerStepRequest } from './promptStepRequests';
 
 declare module '#/app/event/eventBus' {
@@ -108,6 +111,7 @@ export class AgentPromptService extends Disposable implements IAgentPromptServic
   private launchingItem: Record | undefined;
   private readonly steered = new Map<string, Record[]>();
   private readonly steering = new Map<string, SteeringReservation>();
+  private readonly reservedPromptIds = new Set<string>();
   private readonly intakes = new Set<Promise<void>>();
   private readonly intakeControllers = new Set<AbortController>();
   private fullCompactionService: IAgentFullCompactionService | undefined;
@@ -169,9 +173,48 @@ export class AgentPromptService extends Disposable implements IAgentPromptServic
     return tracked;
   }
 
+  [promptAdmission](promptId?: string): PromptReservation {
+    if (promptId !== undefined && promptId.length === 0) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_id must not be empty');
+    }
+    let id = promptId ?? newMessageId();
+    const accepted = this.wire.getModel(PromptAdmissionModel);
+    while (accepted.has(id) || this.reservedPromptIds.has(id)) {
+      if (promptId !== undefined) throw promptIdConflict(id);
+      id = newMessageId();
+    }
+    this.reservedPromptIds.add(id);
+    let submitted = false;
+    return {
+      id,
+      submit: (message) => {
+        if (submitted || !this.reservedPromptIds.has(id)) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt reservation is no longer available');
+        }
+        submitted = true;
+        this.reservedPromptIds.delete(id);
+        this.wire.dispatch(promptAccepted({ promptId: id }));
+        return this.enqueueAccepted(id, message);
+      },
+      dispose: () => {
+        if (submitted) return;
+        submitted = true;
+        this.reservedPromptIds.delete(id);
+      },
+    };
+  }
+
   async enqueue(input: PromptInput): Promise<PromptHandle> {
-    const id = input.id ?? input.message.id ?? newMessageId();
-    const message = { ...input.message, id };
+    const reservation = this[promptAdmission](input.id ?? input.message.id);
+    try {
+      return await reservation.submit(input.message);
+    } finally {
+      reservation.dispose();
+    }
+  }
+
+  private async enqueueAccepted(id: string, inputMessage: ContextMessage): Promise<PromptHandle> {
+    const message = { ...inputMessage, id };
     const launchedDeferred = deferred<Turn | undefined>();
     const completionDeferred = deferred<PromptCompletion>();
     const record = {
@@ -504,6 +547,12 @@ export class AgentPromptService extends Disposable implements IAgentPromptServic
     this.eventBus.publish({ type: 'prompt.queued', promptId: record.id, content: record.message.content, queueLength: this.pending.length });
   }
   private publishAborted(promptId: string): void { this.eventBus.publish({ type: 'prompt.aborted', promptId, abortedAt: new Date().toISOString() }); }
+}
+
+function promptIdConflict(promptId: string): Error2 {
+  return new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt id "${promptId}" is already in use`, {
+    details: { promptId },
+  });
 }
 
 function snapshot(item: Record): PromptSnapshot { return { id: item.id, userMessageId: item.userMessageId, createdAt: item.createdAt, state: item.state, message: item.message }; }

@@ -12,6 +12,7 @@ import { OrderedHookSlot, createHooks } from '#/hooks';
 import type { ContentPart } from '#/kosong/contract/message';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import type { Op } from '#/wire/op';
+import type { ModelDef } from '#/wire/model';
 import type { IWireService } from '#/wire/wire';
 
 export interface StubLoopOptions { readonly hasActiveTurn?: boolean; readonly currentId?: string | number; readonly pendingTurnResult?: boolean }
@@ -100,5 +101,37 @@ export async function runWillBeginStepHooks(
   });
 }
 export type StubWire = IWireService & { readonly ops: readonly Op[]; readonly steered: readonly { readonly input: readonly ContentPart[]; readonly origin?: PromptOrigin }[] };
-export function stubWire(): StubWire { const ops: Op[] = []; const steered: { input: readonly ContentPart[]; origin?: PromptOrigin }[] = []; return { _serviceBrand: undefined, hooks: createHooks(['onDidRestore']), ops, steered, dispatch: (...incoming: Op[]) => { for (const op of incoming) { ops.push(op); if (op.type === 'turn.steer') steered.push(op.payload as never); } }, replay: async () => {}, signal: () => {}, flush: async () => {}, getModel: () => ({}), subscribe: () => toDisposable(() => {}), onEmission: () => toDisposable(() => {}) } as unknown as StubWire; }
+export function stubWire(): StubWire {
+  const ops: Op[] = [];
+  const steered: { input: readonly ContentPart[]; origin?: PromptOrigin }[] = [];
+  const models = new Map<object, unknown>();
+  const getModel = <S>(model: ModelDef<S>): S => {
+    let state = models.get(model);
+    if (state === undefined) {
+      state = model.initial();
+      models.set(model, state);
+    }
+    return state as S;
+  };
+  return {
+    _serviceBrand: undefined,
+    hooks: createHooks(['onDidRestore']),
+    ops,
+    steered,
+    dispatch: (...incoming: Op[]) => {
+      for (const op of incoming) {
+        ops.push(op);
+        const state = getModel(op.descriptor.model);
+        models.set(op.descriptor.model, op.descriptor.apply(state, op.payload));
+        if (op.type === 'turn.steer') steered.push(op.payload as never);
+      }
+    },
+    replay: async () => {},
+    signal: () => {},
+    flush: async () => {},
+    getModel,
+    subscribe: () => toDisposable(() => {}),
+    onEmission: () => toDisposable(() => {}),
+  } as unknown as StubWire;
+}
 export function stubToolExecutor(): IAgentToolExecutorService { return { _serviceBrand: undefined, execute: async function* () {}, onBeforeExecuteTool: Event.None as Event<BeforeToolExecuteEvent>, onWillExecuteTool: Event.None as Event<WillExecuteToolEvent>, hooks: { onDidExecuteTool: new OrderedHookSlot<ToolDidExecuteContext>() }, recordDupType: () => {}, registerToolCallGuard: () => ({ dispose() {} }), registerUnavailableToolDescriber: () => ({ dispose() {} }), registerMissingToolDescriber: () => ({ dispose() {} }) }; }

@@ -14,6 +14,9 @@ import { join } from 'node:path';
 import { Service } from '@moonshot-ai/agent-core-v2/_base/di/service';
 import { CommandContribution } from '@moonshot-ai/agent-core-v2/agent/command/commandContribution';
 import { IFeatureManager } from '@moonshot-ai/agent-core-v2/app/feature/featureManager';
+import { getLiveSessionById } from '@moonshot-ai/agent-core-v2/app/workspaceLifecycle/sessionLookup';
+import { IAgentLifecycleService } from '@moonshot-ai/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { IAgentPromptService, reservePrompt } from '@moonshot-ai/agent-core-v2/agent/prompt/prompt';
 
 import type { Klient } from '../../src/index.js';
 import type { TestEngine } from './engine.js';
@@ -343,6 +346,28 @@ export function defineKlientConformance(
         );
       } finally {
         await handle.dispose();
+        await target.klient.session(created.id).close();
+      }
+    });
+
+    it('propagates prompt id conflicts with the same 40923 error', async () => {
+      const created = await target.klient.global.sessions.create({
+        workDir: process.cwd(),
+        title: 'conformance prompt conflict',
+      });
+      const session = getLiveSessionById(target.app.accessor, created.id);
+      if (session === undefined) throw new Error('conformance session was not materialized');
+      const main = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+      const reservation = reservePrompt(main.accessor.get(IAgentPromptService), 'submission-1');
+      try {
+        await expect(
+          target.klient.session(created.id).agent('main').prompt({
+            input: [{ type: 'text', text: 'duplicate' }],
+            promptId: 'submission-1',
+          }),
+        ).rejects.toMatchObject({ name: 'RPCError', code: 40923 });
+      } finally {
+        reservation.dispose();
         await target.klient.session(created.id).close();
       }
     });

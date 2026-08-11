@@ -294,6 +294,7 @@ export type KimiErrorCode =
   | 'request.invalid'
   | 'request.work_dir_required'
   | 'request.prompt_input_empty'
+  | 'prompt.id_conflict'
   | 'prompt.not_found'
   | 'prompt.already_completed'
   | 'session.busy'
@@ -1264,6 +1265,7 @@ export const kimiErrorCodeSchema = z.enum([
   'request.invalid',
   'request.work_dir_required',
   'request.prompt_input_empty',
+  'prompt.id_conflict',
   'prompt.not_found',
   'prompt.already_completed',
   'session.busy',

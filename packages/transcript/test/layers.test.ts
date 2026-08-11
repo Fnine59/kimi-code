@@ -495,7 +495,7 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     // The engine persists an uploaded medium as a kosong `image_url` /
     // `video_url` part carrying a `kimi-file://<fileId>?path=…` ref, plus an
     // adjacent `<image|video path=…>` text tag. The pair folds into ONE
-    // attachment (source = the daemon upload, name = the tag path's
+    // attachment (source = the session-canonical copy, name = the tag path's
     // basename); the tag is machine markup and never surfaces as prompt text.
     const snapshot = groupMessagesIntoSnapshot([
       {
@@ -530,13 +530,13 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
         attachmentId: 'att_1',
         mediaType: 'video/*',
         name: 'clip.mp4',
-        source: { kind: 'file', fileId: 'file_1' },
+        source: { kind: 'session_media', fileId: 'file_1' },
       },
       {
         attachmentId: 'att_2',
         mediaType: 'image/*',
         name: 'shot.png',
-        source: { kind: 'file', fileId: 'file_2' },
+        source: { kind: 'session_media', fileId: 'file_2' },
       },
     ]);
     const videoTurn = snapshot.items[0];
@@ -578,7 +578,7 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
         attachmentId: 'att_1',
         mediaType: 'image/*',
         name: 'shot.png',
-        source: { kind: 'file', fileId: 'file_4' },
+        source: { kind: 'session_media', fileId: 'file_4' },
       },
     ]);
     expect(snapshot.items.map((item) => item.kind)).toEqual(['marker', 'turn']);
@@ -607,7 +607,7 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
         attachmentId: 'att_1',
         mediaType: 'image/*',
         name: undefined,
-        source: { kind: 'file', fileId: 'file_3' },
+        source: { kind: 'session_media', fileId: 'file_3' },
       },
     ]);
     const turn = snapshot.items[0];
@@ -649,7 +649,7 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
         attachmentId: 'att_1',
         mediaType: 'image/*',
         name: undefined,
-        source: { kind: 'file', fileId: 'file_1' },
+        source: { kind: 'session_media', fileId: 'file_1' },
       },
     ]);
     const turn = snapshot.items[0];

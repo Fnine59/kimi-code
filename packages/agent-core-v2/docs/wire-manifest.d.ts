@@ -53,6 +53,7 @@
 //   plan.revision                      plan                        persisted  src/features/plan/planOps.ts
 //   plugin.session_start               pluginSessionStartSnapshot  persisted  src/agent/plugin/agentPluginOps.ts
 //   profile.bind                       profile                     persisted  src/agent/profile/profileOps.ts
+//   prompt.accepted                    promptAdmission       persisted  src/agent/prompt/promptOps.ts
 //   skill.activate                     skill                       transient  src/agent/skill/skillOps.ts
 //   swarm_mode.enter                   swarm                       persisted  src/features/swarm/swarmOps.ts
 //   swarm_mode.exit                    swarm                       persisted  src/features/swarm/swarmOps.ts
@@ -482,6 +483,15 @@ interface ProfileBindPayload {
 }
 
 /**
+ * model: promptAdmission · persisted
+ * owner: src/agent/prompt/promptOps.ts
+ */
+interface PromptAcceptedPayload {
+  _name: 'prompt.accepted';
+  promptId: string;
+}
+
+/**
  * model: skill · toEvent
  * owner: src/agent/skill/skillOps.ts
  */
@@ -758,6 +768,7 @@ interface WirePayloadMap {
   "plan.revision": PlanRevisionPayload;
   "plugin.session_start": PluginSessionStartPayload;
   "profile.bind": ProfileBindPayload;
+  "prompt.accepted": PromptAcceptedPayload;
   "skill.activate": SkillActivatePayload;
   "swarm_mode.enter": SwarmModeEnterPayload;
   "swarm_mode.exit": SwarmModeExitPayload;

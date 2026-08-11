@@ -175,7 +175,7 @@ describe('AgentTranscriptProjector', () => {
           attachmentId: 't0.att1',
           mediaType: 'image/*',
           name: 'shot.png',
-          source: { kind: 'file', fileId: 'file_1' },
+          source: { kind: 'session_media', fileId: 'file_1' },
         },
       },
     ]);
@@ -188,7 +188,7 @@ describe('AgentTranscriptProjector', () => {
       attachmentId: 't0.att1',
       mediaType: 'image/*',
       name: 'shot.png',
-      source: { kind: 'file', fileId: 'file_1' },
+      source: { kind: 'session_media', fileId: 'file_1' },
     });
   });
 

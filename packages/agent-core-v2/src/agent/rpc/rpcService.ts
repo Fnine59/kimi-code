@@ -17,7 +17,7 @@ import { expandCommandArguments } from '#/app/plugin/commands';
 import { IPluginService } from '#/app/plugin/plugin';
 import { ProfileError } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentPromptService, reservePrompt } from '#/agent/prompt/prompt';
 import { IAgentConversationUndoService } from '#/agent/undo/undo';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -85,26 +85,31 @@ export class AgentRPCService implements IAgentRPCService {
   ) { }
 
   async prompt(payload: PromptPayload): Promise<PromptLaunchResult | undefined> {
-    if (payload.disabledTools !== undefined) {
-      try {
-        await this.toolPolicy.setSessionDisabledTools(payload.disabledTools);
-      } catch (error) {
-        if (error instanceof ProfileError) {
-          throw new Error2(ErrorCodes.REQUEST_INVALID, error.message);
+    const reservation = reservePrompt(this.promptService, payload.promptId);
+    try {
+      if (payload.disabledTools !== undefined) {
+        try {
+          await this.toolPolicy.setSessionDisabledTools(payload.disabledTools);
+        } catch (error) {
+          if (error instanceof ProfileError) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, error.message);
+          }
+          throw error;
         }
-        throw error;
       }
+      await this.updatePromptMetadata(promptMetadataTextFromPayload(payload));
+      const handle = await reservation.submit({
+        role: 'user',
+        content: [...payload.input],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      });
+      if (handle.state === 'pending') return undefined;
+      const turn = await handle.launched;
+      return turn === undefined ? undefined : { turn_id: turn.id };
+    } finally {
+      reservation.dispose();
     }
-    await this.updatePromptMetadata(promptMetadataTextFromPayload(payload));
-    const handle = await this.promptService.enqueue({ id: payload.promptId, message: {
-      role: 'user',
-      content: [...payload.input],
-      toolCalls: [],
-      origin: { kind: 'user' },
-    } });
-    if (handle.state === 'pending') return undefined;
-    const turn = await handle.launched;
-    return turn === undefined ? undefined : { turn_id: turn.id };
   }
 
   async steer(payload: SteerPayload): Promise<PromptLaunchResult | undefined> {

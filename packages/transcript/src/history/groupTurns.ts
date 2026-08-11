@@ -180,7 +180,7 @@ export function groupMessagesIntoSnapshot(
           attachmentId: `att_${attachments.length + 1}`,
           mediaType: `${ref.kind}/*`,
           name: path === undefined ? undefined : pathBaseName(path),
-          source: { kind: 'file', fileId: ref.fileId },
+          source: { kind: 'session_media', fileId: ref.fileId },
         };
         attachments.push(entity);
         ids.push(entity.attachmentId);

@@ -1859,6 +1859,11 @@ describe('SessionLifecycleService', () => {
       await writeFile(join(srcDir, 'media-originals', 'x.png'), 'png');
       await mkdir(join(srcDir, 'media'), { recursive: true });
       await writeFile(join(srcDir, 'media', 'f_1.mp4'), 'mp4');
+      await mkdir(join(srcDir, 'media', 'meta'), { recursive: true });
+      await writeFile(
+        join(srcDir, 'media', 'meta', 'f_1.json'),
+        '{"version":1,"key":"f_1.mp4","name":"clip.mp4","mediaType":"video/mp4"}',
+      );
       await writeFile(join(srcDir, 'state.json'), '{"source":true}');
       await writeFile(join(srcDir, 'agents', 'main', 'wire.jsonl'), '{"type":"metadata"}\n');
       await mkdir(join(srcDir, 'logs'), { recursive: true });
@@ -1883,6 +1888,9 @@ describe('SessionLifecycleService', () => {
         'png',
       );
       await expect(readFile(join(dstDir, 'media', 'f_1.mp4'), 'utf8')).resolves.toBe('mp4');
+      await expect(
+        readFile(join(dstDir, 'media', 'meta', 'f_1.json'), 'utf8'),
+      ).resolves.toContain('clip.mp4');
       await expect(stat(join(dstDir, 'state.json'))).rejects.toThrow();
       await expect(stat(join(dstDir, 'agents', 'main', 'wire.jsonl'))).rejects.toThrow();
       await expect(stat(join(dstDir, 'logs'))).rejects.toThrow();

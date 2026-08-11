@@ -1113,7 +1113,7 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
       expect.objectContaining({
         attachmentId: 't1.att1',
         mediaType: 'image/*',
-        source: { kind: 'file', fileId: 'f_upload' },
+        source: { kind: 'session_media', fileId: 'f_upload' },
       }),
     ]);
   });
@@ -1153,7 +1153,7 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
         attachmentId: 'att_1',
         mediaType: 'image/*',
         name: 'f_upload.png',
-        source: { kind: 'file', fileId: 'f_upload' },
+        source: { kind: 'session_media', fileId: 'f_upload' },
       }),
     ]);
   });

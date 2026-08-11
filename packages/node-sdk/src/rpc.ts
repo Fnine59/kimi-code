@@ -80,8 +80,9 @@ export interface SessionPromptRpcInput {
    */
   readonly disabledTools?: readonly string[];
   /**
-   * Client-chosen prompt record id, echoed on the consuming turn's
-   * `turn.started` (`promptId`). Honored by the v2 RPC client only.
+   * Client-chosen prompt record id, unique for the Agent's persisted history
+   * and echoed on the consuming turn's `turn.started` (`promptId`). Honored by
+   * the v2 RPC client only.
    */
   readonly promptId?: string;
 }

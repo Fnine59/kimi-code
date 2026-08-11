@@ -44,7 +44,7 @@ export const promptPayloadSchema = z.object({
   disabledTools: z.array(z.string()).optional(),
   // Mirrors `PromptPayload.promptId` in the engine (client-chosen prompt
   // record id, echoed on the consuming turn's `turn.started`).
-  promptId: z.string().optional(),
+  promptId: z.string().min(1).optional(),
 });
 
 /** Same shape as `SteerPayload` in the engine. */

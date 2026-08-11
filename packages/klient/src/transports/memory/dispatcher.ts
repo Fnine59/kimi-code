@@ -25,6 +25,7 @@ import type {
   GetResult,
   SaveOptions,
 } from '@moonshot-ai/agent-core-v2/app/file/fileService';
+import { Error2, ErrorCodes } from '@moonshot-ai/agent-core-v2/errors';
 
 import { Readable } from 'node:stream';
 
@@ -58,6 +59,7 @@ export interface MemoryDispatcher {
 
 const REQUEST_INVALID = 40001;
 const NOT_FOUND = 40404;
+const PROMPT_ID_CONFLICT = 40923;
 
 type ScopeKind = 'core' | 'workspace' | 'session' | 'agent';
 
@@ -198,8 +200,15 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
         return wireClone(member);
       }
       const clonedArgs = args.map(wireClone);
-      const result = await (member as (...a: unknown[]) => unknown).apply(instance, clonedArgs);
-      return wireClone(result);
+      try {
+        const result = await (member as (...a: unknown[]) => unknown).apply(instance, clonedArgs);
+        return wireClone(result);
+      } catch (error) {
+        if (error instanceof Error2 && error.code === ErrorCodes.PROMPT_ID_CONFLICT) {
+          throw new RPCError(PROMPT_ID_CONFLICT, error.message, error.details);
+        }
+        throw error;
+      }
     },
 
     stream(scope, service, method, args): AsyncIterable<unknown> {

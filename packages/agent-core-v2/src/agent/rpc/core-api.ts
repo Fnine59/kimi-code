@@ -119,8 +119,9 @@ export interface PromptPayload {
   readonly input: readonly ContentPart[];
   readonly disabledTools?: readonly string[];
   /**
-   * Client-chosen prompt record id; echoed back on the consuming turn's
-   * `turn.started` (`promptId`). Omit to let the engine assign one.
+   * Client-chosen prompt record id, unique for the Agent's persisted history;
+   * echoed back on the consuming turn's `turn.started` (`promptId`). Omit to
+   * let the engine assign one.
    */
   readonly promptId?: string;
 }

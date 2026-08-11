@@ -14,7 +14,7 @@ import { Readable } from 'node:stream';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
-import { createServices } from '#/_base/di/test';
+import { createServices, TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -24,7 +24,8 @@ import type { StepRequest } from '#/agent/loop/stepRequest';
 import { buildDaemonFileUrl, foldMediaPathTagRefs } from '#/agent/media/mediaRef';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { SessionMediaStoreService } from '#/agent/media/sessionMediaStoreService';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentPromptService, reservePrompt } from '#/agent/prompt/prompt';
+import { promptAccepted, PromptAdmissionModel } from '#/agent/prompt/promptOps';
 import { AgentPromptService } from '#/agent/prompt/promptService';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
@@ -40,8 +41,10 @@ import { ErrorCodes, Error2 } from '#/errors';
 import { createHooks } from '#/hooks';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import type { ContentPart } from '#/kosong/contract/message';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { IWireService } from '#/wire/wire';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 
@@ -49,6 +52,12 @@ import { stubContextMemory } from '../contextMemory/stubs';
 import { stubLoopWithHooks, stubToolExecutor, stubWire } from '../loop/stubs';
 import { registerStateServices } from '../../state/stubs';
 import { stubBootstrap } from '../../app/bootstrap/stubs';
+import {
+  recordingWireLog,
+  registerTestAgentWire,
+  restoreTestAgentWire,
+  testWireScope,
+} from '../../wire/stubs';
 
 function message(text: string): ContextMessage {
   return { role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin: { kind: 'user' } };
@@ -56,6 +65,7 @@ function message(text: string): ContextMessage {
 
 function stubFileService(
   files: Map<string, { name: string; bytes: Buffer; mime?: string; stream?: () => Readable }>,
+  onGet?: (fileId: string) => void,
 ): IFileService {
   return {
     _serviceBrand: undefined,
@@ -64,6 +74,7 @@ function stubFileService(
     },
     delete: async () => {},
     get: async (fileId): Promise<GetResult> => {
+      onGet?.(fileId);
       const file = files.get(fileId);
       if (file === undefined) throw new Error(`file not found: ${fileId}`);
       return {
@@ -85,7 +96,9 @@ function harness(
     sessionDir?: string;
     homeDir?: string;
     files?: Map<string, { name: string; bytes: Buffer; mime?: string; stream?: () => Readable }>;
+    fileGets?: string[];
     fullCompaction?: IAgentFullCompactionService;
+    wire?: IWireService;
   } = {},
 ) {
   const disposables = new DisposableStore();
@@ -107,12 +120,15 @@ function harness(
       registerStateServices(reg);
       reg.defineInstance(IAgentContextMemoryService, context);
       reg.defineInstance(IAgentLoopService, loop);
-      reg.defineInstance(IWireService, stubWire());
+      reg.defineInstance(IWireService, opts.wire ?? stubWire());
       reg.defineInstance(IAgentToolExecutorService, stubToolExecutor());
       reg.defineInstance(IAgentFullCompactionService, fullCompaction);
       reg.define(IEventBus, EventBusService);
       reg.define(IAgentSystemReminderService, AgentSystemReminderService);
-      reg.defineInstance(IFileService, stubFileService(opts.files ?? new Map()));
+      reg.defineInstance(
+        IFileService,
+        stubFileService(opts.files ?? new Map(), (fileId) => opts.fileGets?.push(fileId)),
+      );
       reg.defineInstance(IBootstrapService, stubBootstrap(homeDir));
       reg.defineInstance(ISessionContext, makeSessionContext({
         sessionId: 's1',
@@ -122,6 +138,7 @@ function harness(
         cwd: '/tmp',
       }));
       reg.defineInstance(IFileSystemStorageService, new FileStorageService(homeDir));
+      reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore);
       reg.define(ISessionMediaStore, SessionMediaStoreService);
       reg.define(IAgentPromptService, AgentPromptService);
       reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
@@ -138,6 +155,62 @@ function harness(
 }
 
 describe('AgentPromptService', () => {
+  it('rejects an empty caller-chosen id before queue admission', async () => {
+    const { prompt } = harness();
+
+    await expect(prompt.enqueue({ id: '', message: message('hello') })).rejects.toMatchObject({
+      code: 'request.invalid',
+    });
+    expect(prompt.list()).toEqual({ active: undefined, pending: [] });
+  });
+
+  it('atomically rejects a second live reservation for the same id', () => {
+    const { prompt } = harness();
+    const first = reservePrompt(prompt, 'submission-1');
+
+    expect(() => reservePrompt(prompt, 'submission-1')).toThrowError(
+      expect.objectContaining({ code: 'prompt.id_conflict' }),
+    );
+
+    first.dispose();
+    expect(reservePrompt(prompt, 'submission-1').id).toBe('submission-1');
+  });
+
+  it('rejects a duplicate id before daemon media intake or queue events', async () => {
+    const fileGets: string[] = [];
+    const files = new Map([['f_duplicate', { name: 'duplicate.png', bytes: Buffer.from('png') }]]);
+    const { prompt, eventBus } = harness({ files, fileGets });
+    const queued: string[] = [];
+    eventBus.subscribe('prompt.queued', (event) => queued.push(event.promptId));
+    await prompt.enqueue({ id: 'submission-1', message: message('first') });
+
+    await expect(
+      prompt.enqueue({
+        id: 'submission-1',
+        message: {
+          role: 'user',
+          content: [{ type: 'image_url', imageUrl: { url: buildDaemonFileUrl('f_duplicate') } }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'prompt.id_conflict' });
+
+    expect(fileGets).toEqual([]);
+    expect(queued).toEqual([]);
+  });
+
+  it('rejects reuse after the original prompt reaches a terminal state', async () => {
+    const { prompt, loop } = harness();
+    const first = await prompt.enqueue({ id: 'submission-1', message: message('first') });
+    loop.finishActive();
+    await first.completion;
+
+    await expect(
+      prompt.enqueue({ id: 'submission-1', message: message('retry') }),
+    ).rejects.toMatchObject({ code: 'prompt.id_conflict' });
+  });
+
   it('assigns stable identity and launches an idle prompt', async () => {
     const { prompt } = harness();
     const handle = await prompt.enqueue({ id: 'prompt-1', message: message('hello') });
@@ -313,6 +386,36 @@ describe('AgentPromptService', () => {
     expect(
       parts.some((part) => part.type === 'text' && part.text.includes('image/avif')),
     ).toBe(true);
+  });
+});
+
+describe('prompt admission wire model', () => {
+  it('restores accepted ids from the persisted journal', async () => {
+    const disposables = new DisposableStore();
+    onTestFinished(() => {
+      disposables.dispose();
+    });
+    const records: Array<{ type: string; [key: string]: unknown }> = [];
+    const sourceIx = disposables.add(new TestInstantiationService());
+    const source = registerTestAgentWire(sourceIx, testWireScope('prompt', 'source'), {
+      log: recordingWireLog(records),
+    });
+    source.dispatch(promptAccepted({ promptId: 'persisted-submission' }));
+
+    const replayRecords = records.map((record) => ({ ...record }));
+    const replayLog = recordingWireLog([]);
+    const replayIx = disposables.add(new TestInstantiationService());
+    const replay = registerTestAgentWire(replayIx, testWireScope('prompt', 'replay'), {
+      log: replayLog,
+    });
+    await restoreTestAgentWire(
+      replay,
+      replayLog,
+      testWireScope('prompt', 'replay'),
+      replayRecords,
+    );
+
+    expect(replay.getModel(PromptAdmissionModel).has('persisted-submission')).toBe(true);
   });
 });
 

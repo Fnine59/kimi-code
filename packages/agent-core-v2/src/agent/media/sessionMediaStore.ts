@@ -3,8 +3,9 @@
  *
  * Owns the per-session canonical media blobs and shared-cache fallback through
  * the persistence byte store. It materializes daemon uploads, exposes a host
- * path only when the selected backend has one, and reads canonical bytes after
- * a transient daemon upload has been released. Bound at Session scope.
+ * path only when the selected backend has one, and opens canonical bytes with
+ * download metadata after a transient daemon upload has been released. Bound
+ * at Session scope.
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -19,6 +20,18 @@ export interface SessionMediaMaterializeInput {
   readonly signal?: AbortSignal;
 }
 
+export interface SessionMediaReadRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+export interface SessionMediaFile {
+  readonly name: string;
+  readonly mediaType: string;
+  readonly size: number;
+  readonly stream: (range?: SessionMediaReadRange) => AsyncIterable<Uint8Array>;
+}
+
 export interface ISessionMediaStore {
   readonly _serviceBrand: undefined;
 
@@ -30,6 +43,8 @@ export interface ISessionMediaStore {
     fileId: string,
     hintPath?: string,
   ): Promise<{ readonly data: Uint8Array; readonly name: string } | undefined>;
+
+  open(fileId: string): Promise<SessionMediaFile | undefined>;
 
   materialize(input: SessionMediaMaterializeInput): Promise<string | undefined>;
 

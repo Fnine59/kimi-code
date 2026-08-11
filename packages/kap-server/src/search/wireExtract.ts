@@ -25,7 +25,8 @@
  * Kept free of any service / filesystem dependency so it is unit-testable.
  */
 
-import { foldMediaPathTagRefs, type ContentPart } from '@moonshot-ai/agent-core-v2';
+import { foldMediaPathTagRefs } from '@moonshot-ai/agent-core-v2/agent/media/mediaRef';
+import type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
 
 export interface ExtractedWireMessage {
   readonly role: 'user' | 'assistant';
