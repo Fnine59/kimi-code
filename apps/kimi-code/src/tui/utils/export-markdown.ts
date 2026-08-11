@@ -1,4 +1,3 @@
-import { foldMediaPathTagRefs } from '@moonshot-ai/kimi-code-sdk';
 import type { ContentPart, ContextMessage, PromptOrigin, ToolCall } from '@moonshot-ai/kimi-code-sdk';
 
 const HINT_KEYS = ['path', 'file_path', 'command', 'query', 'url', 'name', 'pattern'] as const;
@@ -140,11 +139,10 @@ function formatTurnMd(messages: readonly ContextMessage[], turnNumber: number): 
 
     if (msg.role === 'user') {
       lines.push('### User', '');
-      // Fold the upload pair (`<media path>` tag + daemon-ref media part): a
-      // claimed tag is machine markup carrying the materialization path and
-      // must not leak into the exported document; the media part itself
-      // renders as `[image]`/`[video]` below.
-      for (const part of foldMediaPathTagRefs(msg.content).parts) {
+      // A daemon-ref media part is self-contained and renders as
+      // `[image]`/`[video]` below; a standalone `<media path>` tag is user
+      // text and exports verbatim.
+      for (const part of msg.content) {
         const text = formatContentPartMd(part);
         if (text.trim()) {
           lines.push(text, '');
@@ -193,8 +191,8 @@ function buildOverview(
   let topic = '';
   for (const msg of history) {
     if (msg.role === 'user' && !isInternalMessage(msg)) {
-      const textParts = foldMediaPathTagRefs(msg.content)
-        .parts.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+      const textParts = msg.content
+        .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
         .map((p) => p.text);
       topic = shorten(textParts.join(' '), 80);
       break;

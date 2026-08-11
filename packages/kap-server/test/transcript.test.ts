@@ -1121,14 +1121,13 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
   it('lists an attachment-only prompt as an empty-string user message (cold)', async () => {
     const id = await createSession();
     await ensureMainAgent(id);
-    // The persisted shape of an upload-only prompt: the `<image path>` tag
-    // text part paired with its daemon-ref media part. The cold fold collapses
-    // the pair into one attachment and an empty prompt text.
+    // The persisted shape of an upload-only prompt: a single self-contained
+    // daemon-ref media part. The cold projection maps it to one attachment
+    // and an empty prompt text.
     await seedMainAgentMessages(id, [
       {
         role: 'user',
         content: [
-          { type: 'text', text: '<image path="/tmp/cache/f_upload.png"></image>' },
           { type: 'image_url', imageUrl: { url: 'kimi-file://f_upload?path=%2Ftmp%2Fcache%2Ff_upload.png' } },
         ],
         toolCalls: [],

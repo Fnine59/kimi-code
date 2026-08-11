@@ -56,10 +56,6 @@ function imageMessage(url: string, ...before: ContentPart[]): Message {
   };
 }
 
-function imagePathTagPart(path: string): ContentPart {
-  return { type: 'text', text: `<image path="${path}"></image>` };
-}
-
 function firstPart(messages: readonly Message[]) {
   return messages[0]!.content[0]!;
 }
@@ -84,6 +80,26 @@ function fileService(files: Map<string, { name: string; bytes: Buffer }>): IFile
         },
         stream: () => Readable.from([file.bytes]),
       };
+    },
+  };
+}
+
+function countingFileService(files: Map<string, { name: string; bytes: Buffer }>): {
+  service: IFileService;
+  readonly gets: number;
+} {
+  const base = fileService(files);
+  let gets = 0;
+  return {
+    service: {
+      ...base,
+      get: async (fileId) => {
+        gets++;
+        return base.get(fileId);
+      },
+    },
+    get gets() {
+      return gets;
     },
   };
 }
@@ -390,7 +406,7 @@ describe('AgentMediaResolverService canonical session bytes', () => {
 describe('AgentMediaResolverService image strategy', () => {
   it('inlines a daemon-ref image as a canonical base64 data url, leaving other parts untouched', async () => {
     const res = resolver(new Map([[FILE_ID, { name: 'pic.png', bytes: PNG_BYTES }]]));
-    const tagPart = imagePathTagPart(IMAGE_FALLBACK_PATH);
+    const tagPart: ContentPart = { type: 'text', text: IMAGE_TAG };
     const remotePart: ContentPart = {
       type: 'image_url',
       imageUrl: { url: 'https://example.com/pic.png' },
@@ -476,13 +492,12 @@ describe('AgentMediaResolverService image strategy', () => {
       fileId: FILE_ID,
       imageIn: true,
     },
-  ])('drops the part, keeping the adjacent path tag, when $name', async ({ files, fileId, imageIn }) => {
-    const tagPart = imagePathTagPart(IMAGE_FALLBACK_PATH);
-    const message = imageMessage(buildKimiFileUrl(fileId, IMAGE_FALLBACK_PATH), tagPart);
+  ])('synthesizes the degrade tag when $name', async ({ files, fileId, imageIn }) => {
+    const message = imageMessage(buildKimiFileUrl(fileId, IMAGE_FALLBACK_PATH));
 
     const out = await resolver(files).resolve([message], requester({ imageIn }));
 
-    expect(out[0]!.content).toEqual([tagPart]);
+    expect(out[0]!.content).toEqual([{ type: 'text', text: IMAGE_TAG }]);
   });
 
   it.each([
@@ -490,20 +505,6 @@ describe('AgentMediaResolverService image strategy', () => {
       name: 'a bare stale reference has no adjacent tag',
       files: new Map<string, { name: string; bytes: Buffer }>(),
       url: buildKimiFileUrl('missing', IMAGE_FALLBACK_PATH),
-      imageIn: true,
-      expected: IMAGE_TAG,
-    },
-    {
-      name: 'the model cannot ingest images and no adjacent tag exists',
-      files: new Map([[FILE_ID, { name: 'pic.png', bytes: PNG_BYTES }]]),
-      url: buildKimiFileUrl(FILE_ID, IMAGE_FALLBACK_PATH),
-      imageIn: false,
-      expected: IMAGE_TAG,
-    },
-    {
-      name: 'the bytes sniff as an unaccepted image mime and no adjacent tag exists',
-      files: new Map([[FILE_ID, { name: 'pic.bmp', bytes: BMP_BYTES }]]),
-      url: buildKimiFileUrl(FILE_ID, IMAGE_FALLBACK_PATH),
       imageIn: true,
       expected: IMAGE_TAG,
     },
@@ -529,17 +530,9 @@ describe('AgentMediaResolverService image strategy', () => {
 
   it('memoizes an inlined image across resolves without re-reading the bytes', async () => {
     const files = new Map([[FILE_ID, { name: 'pic.png', bytes: PNG_BYTES }]]);
-    const base = fileService(files);
-    let gets = 0;
-    const counting: IFileService = {
-      ...base,
-      get: async (fileId) => {
-        gets++;
-        return base.get(fileId);
-      },
-    };
+    const counting = countingFileService(files);
     const res = new AgentMediaResolverService(
-      counting,
+      counting.service,
       blobStore(),
       telemetry,
       new AgentStateService(),
@@ -560,23 +553,15 @@ describe('AgentMediaResolverService image strategy', () => {
 
     expect(firstPart(first)).toEqual(expected);
     expect(firstPart(second)).toEqual(expected);
-    expect(gets).toBe(1);
+    expect(counting.gets).toBe(1);
   });
 
   it('re-reads an oversized image instead of pinning its base64 in agent state', async () => {
     const bigBytes = Buffer.concat([PNG_BYTES, Buffer.alloc(8 * 1024 * 1024)]);
     const files = new Map([[FILE_ID, { name: 'pic.png', bytes: bigBytes }]]);
-    const base = fileService(files);
-    let gets = 0;
-    const counting: IFileService = {
-      ...base,
-      get: async (fileId) => {
-        gets++;
-        return base.get(fileId);
-      },
-    };
+    const counting = countingFileService(files);
     const res = new AgentMediaResolverService(
-      counting,
+      counting.service,
       blobStore(),
       telemetry,
       new AgentStateService(),
@@ -588,7 +573,7 @@ describe('AgentMediaResolverService image strategy', () => {
     const second = await res.resolve([message], requester({}));
 
     expect(firstPart(first)).toEqual(firstPart(second));
-    expect(gets).toBe(2);
+    expect(counting.gets).toBe(2);
   });
 
   it.each([
@@ -609,17 +594,9 @@ describe('AgentMediaResolverService image strategy', () => {
     async ({ present, imageIn, reads }) => {
       const files = new Map<string, { name: string; bytes: Buffer }>();
       if (present) files.set(FILE_ID, { name: 'pic.png', bytes: PNG_BYTES });
-      const base = fileService(files);
-      let gets = 0;
-      const counting: IFileService = {
-        ...base,
-        get: async (fileId) => {
-          gets++;
-          return base.get(fileId);
-        },
-      };
+      const counting = countingFileService(files);
       const res = new AgentMediaResolverService(
-        counting,
+        counting.service,
         blobStore(),
         telemetry,
         new AgentStateService(),
@@ -633,7 +610,7 @@ describe('AgentMediaResolverService image strategy', () => {
 
       expect(firstPart(degraded)).toEqual({ type: 'text', text: IMAGE_TAG });
       expect(firstPart(out)).toEqual({ type: 'image_url', imageUrl: { url: PNG_DATA_URL } });
-      expect(gets).toBe(reads);
+      expect(counting.gets).toBe(reads);
     },
   );
 });
@@ -658,19 +635,16 @@ describe('AgentMediaResolverService session-canonical display path', () => {
 
   it.each([
     {
-      name: 'refreshes a claimed persisted tag to the canonical path and drops the reference',
+      name: 'synthesizes the degrade tag from the canonical path when it exists',
       canonical: true,
     },
     {
-      name: 'leaves a claimed persisted tag untouched when no canonical file exists',
+      name: 'synthesizes the degrade tag from the snapshot path when no canonical file exists',
       canonical: false,
     },
   ])('$name', async ({ canonical: plant }) => {
     const canonical = plant ? await plantCanonical(FILE_ID, '.png', PNG_BYTES) : undefined;
-    const message = imageMessage(
-      buildKimiFileUrl(FILE_ID, IMAGE_FALLBACK_PATH),
-      imagePathTagPart(IMAGE_FALLBACK_PATH),
-    );
+    const message = imageMessage(buildKimiFileUrl(FILE_ID, IMAGE_FALLBACK_PATH));
 
     const out = await resolver(new Map(), sessionDir).resolve([message], requester({ imageIn: false }));
 
@@ -692,7 +666,7 @@ describe('AgentMediaResolverService session-canonical display path', () => {
     expect(firstPart(second)).toEqual({ type: 'text', text: `<video path="${canonical}"></video>` });
   });
 
-  it('drops a claimed video reference, refreshing its tag instead of emitting a second one', async () => {
+  it('keeps a legacy persisted tag as text and degrades the reference with a synthesized tag', async () => {
     const canonical = await plantCanonical(FILE_ID, '.mp4', VIDEO_BYTES);
     const message: Message = {
       role: 'user',
@@ -707,11 +681,12 @@ describe('AgentMediaResolverService session-canonical display path', () => {
       requester({ videoIn: false }),
     );
     expect(out[0]!.content).toEqual([
+      { type: 'text', text: VIDEO_TAG },
       { type: 'text', text: `<video path="${canonical}"></video>` },
     ]);
   });
 
-  it('drops a claimed video reference whose degrade was memoized from an earlier bare resolve', async () => {
+  it('keeps a legacy persisted tag as text when the degrade was memoized from an earlier bare resolve', async () => {
     const res = resolver(new Map(), sessionDir);
     const req = requester({ videoIn: false });
     const bare: Message = {
@@ -724,7 +699,7 @@ describe('AgentMediaResolverService session-canonical display path', () => {
     const first = await res.resolve([bare], req);
     expect(firstPart(first)).toEqual({ type: 'text', text: VIDEO_TAG });
 
-    const paired: Message = {
+    const withLegacyTag: Message = {
       role: 'user',
       toolCalls: [],
       content: [
@@ -732,8 +707,11 @@ describe('AgentMediaResolverService session-canonical display path', () => {
         { type: 'video_url', videoUrl: { url: buildKimiFileUrl(FILE_ID, FALLBACK_PATH) } },
       ],
     };
-    const second = await res.resolve([paired], req);
-    expect(second[0]!.content).toEqual([{ type: 'text', text: VIDEO_TAG }]);
+    const second = await res.resolve([withLegacyTag], req);
+    expect(second[0]!.content).toEqual([
+      { type: 'text', text: VIDEO_TAG },
+      { type: 'text', text: VIDEO_TAG },
+    ]);
   });
 });
 

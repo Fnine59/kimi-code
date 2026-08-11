@@ -3,12 +3,10 @@
  * editor draft) into one payload — the historical `'\n\n'`-joined string when
  * nothing carries media, or a merged part list when any item has extracted
  * media parts (queued image messages, or the editor draft after placeholder
- * extraction). Standalone `<media path>` tags (machine markup paired with the
- * adjacent daemon-ref media part) keep their own parts so the engine-side
- * pairing survives the merge.
+ * extraction). Media parts are self-contained daemon references; no machine
+ * `<media path>` tag is authored, so text parts always merge freely.
  */
 
-import { matchSingleMediaPathTag } from '@moonshot-ai/kimi-code-sdk';
 import type { PromptPart } from '@moonshot-ai/kimi-code-sdk';
 
 import type { SteerInputItem } from '../types';
@@ -20,11 +18,7 @@ import type { SteerInputItem } from '../types';
  * adjacent text part. The one exception is two touching media parts: a
  * standalone `{type:'text',text:'\n\n'}` between them would be rejected
  * by `normalizePromptInput` as an empty text part, so the separator is
- * dropped there (media parts are self-delimiting anyway). An item whose
- * FIRST part is a standalone `<media path>` tag counts as media for this:
- * the tag stays atomic (never merges with the separator), so a separator
- * inserted before it would strand exactly that illegal whitespace-only
- * text part between the previous media part and the tag.
+ * dropped there (media parts are self-delimiting anyway).
  */
 export function combineSteerInput(items: readonly SteerInputItem[]): string | PromptPart[] {
   const hasMedia = items.some((item) => item.parts !== undefined && item.parts.length > 0);
@@ -32,9 +26,7 @@ export function combineSteerInput(items: readonly SteerInputItem[]): string | Pr
   const parts: PromptPart[] = [];
   for (const item of items) {
     const first = item.parts?.[0];
-    const startsWithMedia =
-      first !== undefined &&
-      (first.type !== 'text' || matchSingleMediaPathTag(first.text) !== undefined);
+    const startsWithMedia = first !== undefined && first.type !== 'text';
     const lastIsMedia = parts.length > 0 && parts.at(-1)?.type !== 'text';
     if (parts.length > 0 && !(lastIsMedia && startsWithMedia)) {
       appendSteerText(parts, '\n\n');
@@ -45,12 +37,7 @@ export function combineSteerInput(items: readonly SteerInputItem[]): string | Pr
           parts.push(part);
           continue;
         }
-        // A standalone `<media path>` tag is machine markup paired with the
-        // adjacent daemon-ref media part; merging it into neighboring text
-        // would break the pairing (the engine fold only claims standalone
-        // tags), so it keeps its own part.
-        if (matchSingleMediaPathTag(part.text) !== undefined) parts.push(part);
-        else appendSteerText(parts, part.text);
+        appendSteerText(parts, part.text);
       }
     } else {
       appendSteerText(parts, item.text);

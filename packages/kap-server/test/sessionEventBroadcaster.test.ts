@@ -879,7 +879,7 @@ describe('SessionEventBroadcaster', () => {
         agentEvent(type, {
           ...ids,
           content: [
-            { type: 'text', text: '<image path="/abs/session/media/f_img1.png"></image>' },
+            { type: 'text', text: 'look at this' },
             {
               type: 'image_url',
               imageUrl: { url: 'kimi-file://f_img1?path=%2Fabs%2Fsession%2Fmedia%2Ff_img1.png' },
@@ -890,6 +890,7 @@ describe('SessionEventBroadcaster', () => {
       await bc.getCursor('s1'); // drain
 
       const expected = [
+        { type: 'text', text: 'look at this' },
         { type: 'image', source: { kind: 'session_media', file_id: 'f_img1' } },
       ];
       const live = envelopes.find((e) => e.type === type);

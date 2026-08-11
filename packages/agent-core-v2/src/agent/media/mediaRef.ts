@@ -29,31 +29,21 @@
  * media resolver).
  *
  * The `<image|video|audio|file path="…">` tag is the model-facing
- * degradation form: the resolver (or an edge) swaps a media part for the tag
- * when the bytes cannot reach the provider, and clients parse it back to
- * render or re-open the file. Emission escapes the path as an XML attribute;
- * parsing unescapes it and tolerates extra attributes and a missing closing
- * tag. `matchSingleMediaPathTag` matches only when the whole (trimmed) text
- * is exactly one tag — the shape upload edges emit as a standalone text part
- * next to the daemon-ref media part; tags embedded in larger user text are
- * never matched, because stripping there would eat user content.
+ * degradation form: the resolver swaps a media part for the tag when the
+ * bytes cannot reach the provider, and plain-text edges (skill/plugin args)
+ * write it directly; clients parse it back to render or re-open the file.
+ * Emission escapes the path as an XML attribute; parsing unescapes it and
+ * tolerates extra attributes and a missing closing tag.
+ * `matchSingleMediaPathTag` matches only when the whole (trimmed) text is
+ * exactly one tag; tags embedded in larger user text are never matched,
+ * because treating them as markup would eat user content.
  *
- * The tag + daemon-ref fold is the read-model normalization of the upload
- * pair: a CLAIMED tag text part disappears (it is machine markup), and each
- * daemon-ref media part yields one `FoldedMediaRef` — carrying the paired
- * tag's path, or none for a bare ref. An unpaired standalone tag stays as a
- * text part: without a pairing ref it is user-visible text, not markup the
- * read model may eat. `pairMediaPathTagRefs` is the single pairing algorithm
- * the fold and the request-time media resolver share, so the two can never
- * drift apart. Pairing rules: only a standalone tag participates; a tag
- * pairs with a daemon-ref media part immediately before or after it (edges
- * emit tag-before-ref; persisted history also has ref-before-tag) when the
- * kinds are compatible — a `file` tag matches either ref kind — AND the
- * tag's path equals the path the reference carries (a reference without a
- * path can never pair); each tag claims at most one reference and each
- * reference is claimed by at most one tag, references claiming in input
- * order, checking the part before them first. `claimingRefIndex` recovers
- * which reference claimed a given tag.
+ * A daemon-ref media part is self-contained: the reference's `?path=`
+ * carries the materialized copy's location, so read models derive the
+ * attachment (kind from the part type, path from the reference) straight
+ * from the part via `daemonFileRefFromPart` — there is no tag+ref pairing
+ * to compute. A standalone tag in history is user-visible text or a legacy
+ * degrade form and always stays a text part.
  *
  * Pure types and pure functions only — no I/O, no SDKs; depends only on the
  * `ContentPart` envelope type from `kosong/contract`.
@@ -268,77 +258,4 @@ export function matchSingleMediaPathTag(text: string): MediaPathTag | undefined 
   if (tags.length !== 1) return undefined;
   const tag = tags[0]!;
   return tag.index === 0 && tag.text.length === trimmed.length ? tag : undefined;
-}
-
-export interface FoldedMediaRef {
-  readonly kind: 'image' | 'video';
-  readonly ref: DaemonFileRef;
-  readonly path?: string;
-}
-
-export interface MediaPathTagFold {
-  readonly parts: ContentPart[];
-  readonly media: FoldedMediaRef[];
-}
-
-export interface MediaPathTagPairing {
-  readonly claimedTagIndices: ReadonlySet<number>;
-  readonly claimedPathByRefIndex: ReadonlyMap<number, string>;
-  readonly claimingRefByTagIndex: ReadonlyMap<number, number>;
-}
-
-export function pairMediaPathTagRefs(parts: readonly ContentPart[]): MediaPathTagPairing {
-  const tagByIndex = new Map<number, MediaPathTag>();
-  const refByIndex = new Map<number, { kind: 'image' | 'video'; path?: string }>();
-  parts.forEach((part, index) => {
-    if (part.type === 'text') {
-      const tag = matchSingleMediaPathTag(part.text);
-      if (tag !== undefined) tagByIndex.set(index, tag);
-      return;
-    }
-    const ref = daemonFileRefFromPart(part);
-    if (ref !== undefined) refByIndex.set(index, { kind: ref.kind, path: ref.ref.path });
-  });
-  const claimedTagIndices = new Set<number>();
-  const claimedPathByRefIndex = new Map<number, string>();
-  const claimingRefByTagIndex = new Map<number, number>();
-  for (const [refIndex, ref] of refByIndex) {
-    if (ref.path === undefined) continue;
-    for (const neighbor of [refIndex - 1, refIndex + 1]) {
-      const tag = tagByIndex.get(neighbor);
-      if (tag === undefined || claimedTagIndices.has(neighbor)) continue;
-      if (tag.kind !== 'file' && tag.kind !== ref.kind) continue;
-      if (tag.path !== ref.path) continue;
-      claimedTagIndices.add(neighbor);
-      claimedPathByRefIndex.set(refIndex, tag.path);
-      claimingRefByTagIndex.set(neighbor, refIndex);
-      break;
-    }
-  }
-  return { claimedTagIndices, claimedPathByRefIndex, claimingRefByTagIndex };
-}
-
-export function foldMediaPathTagRefs(parts: readonly ContentPart[]): MediaPathTagFold {
-  const pairing = pairMediaPathTagRefs(parts);
-  const kept: ContentPart[] = [];
-  const media: FoldedMediaRef[] = [];
-  parts.forEach((part, index) => {
-    if (pairing.claimedTagIndices.has(index)) return;
-    kept.push(part);
-    const ref = daemonFileRefFromPart(part);
-    if (ref === undefined) return;
-    media.push({
-      kind: ref.kind,
-      ref: ref.ref,
-      path: pairing.claimedPathByRefIndex.get(index),
-    });
-  });
-  return { parts: kept, media };
-}
-
-export function claimingRefIndex(
-  pairing: MediaPathTagPairing,
-  tagIndex: number,
-): number | undefined {
-  return pairing.claimingRefByTagIndex.get(tagIndex);
 }

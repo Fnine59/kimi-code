@@ -350,8 +350,8 @@ export async function resolvePromptMediaFiles(
         }
         // Like an uploaded video, the image enters context as a bare internal
         // `kimi-file://<id>` reference: the engine's prompt intake
-        // materializes the session-canonical copy and authors the paired
-        // `<image path>` tag, then resolves the reference at request time.
+        // materializes the session-canonical copy and resolves the reference
+        // at request time.
         // When compression changed the bytes, the reference addresses a NEW
         // daemon upload holding the final bytes — the client's original
         // upload stays untouched. The re-save is staging only: read models
@@ -380,10 +380,9 @@ export async function resolvePromptMediaFiles(
 
       // Uploaded video: carried into context as a bare internal
       // `kimi-file://<id>` reference. The engine's prompt intake materializes
-      // the session copy and authors the paired `<video path>` tag, then
-      // resolves the reference to a provider form (upload / inline / tag) at
-      // request time, so the edge never uploads and never blocks on the
-      // provider.
+      // the session copy, then resolves the reference to a provider form
+      // (upload / inline / tag) at request time, so the edge never uploads
+      // and never blocks on the provider.
       content.push({
         type: 'video',
         source: { kind: 'url', url: buildDaemonFileUrl(file.meta.id) },

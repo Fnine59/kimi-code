@@ -235,9 +235,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         // submission leaves the session's controls untouched. Prompt videos
         // and uploaded images are carried into context as bare internal
         // `kimi-file://` references; the engine's prompt intake materializes
-        // the session copy, authors the paired media-path tag, and resolves
-        // them to a provider form (upload / inline / path tag) at request
-        // time, so the edge no longer uploads. Already-canonical
+        // the session copy and resolves them to a provider form
+        // (upload / inline / path tag) at request time, so the edge no longer
+        // uploads. Already-canonical
         // `session_media` parts receive their private canonical path here;
         // that path is never projected back to the client.
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
@@ -410,11 +410,10 @@ function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][number]) {
   const status = prompt.state === 'running' || prompt.state === 'steered'
     ? 'running'
     : prompt.state === 'blocked' ? 'blocked' : 'queued';
-  // The prompt queue holds user prompts only; the shared projection folds the
-  // upload pair (`<media path>` tag + daemon-ref media part) into the single
-  // media part, mirroring the message projection: the tag is machine markup
-  // and would otherwise leak the materialization path to REST callers while
-  // rendering the same upload twice.
+  // The prompt queue holds user prompts only; the shared projection maps each
+  // self-contained daemon-ref media part to its `{kind:'session_media'}` wire
+  // shape, mirroring the message projection: the internal URL and the
+  // materialization path never reach REST callers.
   return {
     prompt_id: prompt.id,
     user_message_id: prompt.userMessageId,

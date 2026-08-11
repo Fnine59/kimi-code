@@ -410,7 +410,7 @@ describe('contract schemas', () => {
 });
 
 describe('groupMessagesIntoSnapshot (cold path)', () => {
-  // Single-user-message shell shared by the media tag+ref fold tests below.
+  // Single-user-message shell shared by the media ref projection tests below.
   const snapshotOf = (...parts: HistoryContentPart[]): AgentTranscriptSnapshot =>
     groupMessagesIntoSnapshot([
       { role: 'user', content: parts, toolCalls: [], origin: { kind: 'user' } },
@@ -491,12 +491,11 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     expect(firstTurn.attachmentIds).toEqual(['att_1', 'att_2', 'att_3']);
   });
 
-  it('folds persisted kimi-file media refs and their <media path> tags into single attachments', () => {
-    // The engine persists an uploaded medium as a kosong `image_url` /
-    // `video_url` part carrying a `kimi-file://<fileId>?path=…` ref, plus an
-    // adjacent `<image|video path=…>` text tag. The pair folds into ONE
-    // attachment (source = the session-canonical copy, name = the tag path's
-    // basename); the tag is machine markup and never surfaces as prompt text.
+  it('maps persisted kimi-file media refs to attachments named from the ref path', () => {
+    // The engine persists an uploaded medium as a self-contained kosong
+    // `image_url` / `video_url` part carrying a `kimi-file://<fileId>?path=…`
+    // ref: the part type gives the kind, and the `?path=` names the
+    // materialized session copy, whose basename becomes the attachment name.
     const snapshot = groupMessagesIntoSnapshot([
       {
         role: 'user',
@@ -505,7 +504,6 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
             type: 'video_url',
             videoUrl: { url: 'kimi-file://file_1?path=%2Fcache%2Fclip.mp4' },
           } as HistoryContentPart,
-          { type: 'text', text: '<video path="/cache/clip.mp4"></video>' },
         ],
         toolCalls: [],
         origin: { kind: 'user' },
@@ -514,7 +512,6 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
         role: 'user',
         content: [
           { type: 'text', text: 'what is this?' },
-          { type: 'text', text: '<image path="/cache/shot.png"></image>' },
           {
             type: 'image_url',
             imageUrl: { url: 'kimi-file://file_2?path=%2Fcache%2Fshot.png' },
@@ -550,17 +547,16 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     expect(imageTurn.prompt).toBe('what is this?');
   });
 
-  it('folds the upload pair in a user-slash turn-opening input like a plain user turn', () => {
+  it('projects a daemon ref in a user-slash turn-opening input like a plain user turn', () => {
     // A user-slash skill command carrying an uploaded image persists the same
-    // tag+ref pair; the cold rebuild folds it exactly like a plain user turn
-    // (claimed tag out of the prompt text, one attachment on the turn),
-    // mirroring the live `projectTurnPrompt` fold.
+    // self-contained daemon-ref part; the cold rebuild projects it exactly
+    // like a plain user turn (one attachment on the turn), mirroring the live
+    // `projectTurnPrompt` projection.
     const snapshot = groupMessagesIntoSnapshot([
       {
         role: 'user',
         content: [
           { type: 'text', text: '/gen-docs ' },
-          { type: 'text', text: '<image path="/cache/shot.png"></image>' },
           {
             type: 'image_url',
             imageUrl: { url: 'kimi-file://file_4?path=%2Fcache%2Fshot.png' },
@@ -591,17 +587,17 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     expect(turn.attachmentIds).toEqual(['att_1']);
   });
 
-  it('keeps a bare kimi-file ref as a pathless attachment and inline tags as user text', () => {
+  it('keeps a pathless kimi-file ref as a nameless attachment and inline tags as user text', () => {
     const snapshot = snapshotOf(
       { type: 'text', text: 'open <image path="/tmp/other.png"></image> please' },
       {
         type: 'image_url',
-        imageUrl: { url: 'kimi-file://file_3?path=%2Fcache%2Fplain.png' },
+        imageUrl: { url: 'kimi-file://file_3' },
       } as HistoryContentPart,
     );
 
-    // No adjacent tag: the attachment carries no path-derived name; the
-    // inline tag inside real user text stays verbatim (never stripped).
+    // A ref without `?path=` has no path-derived name; the inline tag inside
+    // real user text stays verbatim (never stripped).
     expect(snapshot.attachments).toEqual([
       {
         attachmentId: 'att_1',
@@ -616,10 +612,36 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     expect(turn.prompt).toBe('open <image path="/tmp/other.png"></image> please');
   });
 
-  it('keeps standalone <media path> tags as prompt text when no daemon ref pairs with them', () => {
+  it('keeps a legacy tag+ref pair as prompt text plus the ref-derived attachment', () => {
+    // Legacy sessions persist an upload as the pair `<media path>` tag text
+    // part + daemon-ref media part. Tolerated, not folded: the tag stays
+    // user-visible text and the self-contained ref projects on its own.
+    const snapshot = snapshotOf(
+      { type: 'text', text: '<image path="/cache/shot.png"></image>' },
+      {
+        type: 'image_url',
+        imageUrl: { url: 'kimi-file://file_5?path=%2Fcache%2Fshot.png' },
+      } as HistoryContentPart,
+    );
+
+    expect(snapshot.attachments).toEqual([
+      {
+        attachmentId: 'att_1',
+        mediaType: 'image/*',
+        name: 'shot.png',
+        source: { kind: 'session_media', fileId: 'file_5' },
+      },
+    ]);
+    const turn = snapshot.items[0];
+    if (turn?.kind !== 'turn') throw new Error('expected turn');
+    expect(turn.prompt).toBe('<image path="/cache/shot.png"></image>');
+    expect(turn.attachmentIds).toEqual(['att_1']);
+  });
+
+  it('keeps standalone <media path> tags as prompt text', () => {
     // The no-closing-tag and extra-attribute forms both exist in persisted
-    // sessions. Without an adjacent path-matching ref there is no pair: the
-    // tag is user-visible text, not markup the read model may eat.
+    // sessions. A standalone tag is user-visible text (or the legacy degrade
+    // form), not markup the read model may eat.
     const snapshot = snapshotOf(
       { type: 'text', text: '<image path="/cache/shot.png">' },
       { type: 'text', text: '<image path="/cache/shot.png" content_type="image/png"></image>' },
@@ -633,29 +655,6 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
     );
     expect(turn.attachmentIds).toBeUndefined();
     expect(snapshot.attachments).toEqual([]);
-  });
-
-  it('keeps a standalone tag as prompt text when the adjacent ref carries a different path', () => {
-    const snapshot = snapshotOf(
-      { type: 'text', text: '<image path="/cache/other.png"></image>' },
-      {
-        type: 'image_url',
-        imageUrl: { url: 'kimi-file://file_1?path=%2Fcache%2Fshot.png' },
-      } as HistoryContentPart,
-    );
-
-    expect(snapshot.attachments).toEqual([
-      {
-        attachmentId: 'att_1',
-        mediaType: 'image/*',
-        name: undefined,
-        source: { kind: 'session_media', fileId: 'file_1' },
-      },
-    ]);
-    const turn = snapshot.items[0];
-    if (turn?.kind !== 'turn') throw new Error('expected turn');
-    expect(turn.prompt).toBe('<image path="/cache/other.png"></image>');
-    expect(turn.attachmentIds).toEqual(['att_1']);
   });
 
   it('keeps cold tool calls running until a result is persisted', () => {

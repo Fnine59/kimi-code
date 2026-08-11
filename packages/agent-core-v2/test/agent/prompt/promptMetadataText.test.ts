@@ -7,6 +7,8 @@
  *   - an inline image-compression caption (harness metadata placed next to
  *     the image by prompt ingestion) never leaks into titles/lastPrompt,
  *     whether it is a standalone text part or merged into the user's text
+ *   - a standalone `<media path>` tag (machine markup) never leaks a
+ *     materialization path into titles/lastPrompt
  */
 
 import { describe, expect, it } from 'vitest';
@@ -48,9 +50,9 @@ describe('promptMetadataTextFromContentParts', () => {
   });
 
   it('keeps an upload <image path> tag out of the metadata text', () => {
-    // The upload pair (`<image path>` tag + daemon-ref image part) folds to
-    // the `[image]` placeholder — the materialization path must never leak
-    // into titles / lastPrompt.
+    // A standalone media path tag is machine markup: the materialization path
+    // must never leak into titles / lastPrompt, whether or not a daemon-ref
+    // part rides next to it.
     const text = promptMetadataTextFromPayload({
       input: [
         { type: 'text', text: 'what is this?' },
@@ -62,15 +64,14 @@ describe('promptMetadataTextFromContentParts', () => {
     expect(text).not.toContain('/Users/alice');
   });
 
-  it('keeps a bare <image path> tag as text when no ref pairs with it', () => {
-    // Without a paired daemon ref the tag is not machine markup the fold may
-    // claim: it stays user-visible text.
+  it('keeps a bare <image path> tag out of the metadata text', () => {
     const text = promptMetadataTextFromPayload({
       input: [
         { type: 'text', text: '<image path="/cache/f_123.png">' },
         { type: 'text', text: 'describe it' },
       ],
     });
-    expect(text).toBe('<image path="/cache/f_123.png"> describe it');
+    expect(text).toBe('describe it');
+    expect(text).not.toContain('/cache');
   });
 });

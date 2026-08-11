@@ -385,8 +385,8 @@ describe('server-v2 /api/v1 prompts', () => {
     });
     expect(submitted.body.code).toBe(0);
 
-    // [compression caption, projected file reference]: the `<image path>` tag
-    // folded into the media part instead of reaching the wire.
+    // [compression caption, projected file reference]: the daemon ref
+    // projects to `session_media`, its materialization path never leaked.
     const content = submitted.body.data.content as Array<Record<string, unknown>>;
     expect(content).toHaveLength(2);
     const caption = content[0] as { type: string; text: string };
@@ -407,9 +407,9 @@ describe('server-v2 /api/v1 prompts', () => {
     const finalFileId = image.source.file_id;
     expect(finalFileId).not.toBe(uploaded.id);
 
-    // The folded-away <image path> tag named the materialized session-media
-    // copy of the FINAL (compressed) bytes, named by the final upload id — the
-    // copy still lands on disk for the engine, but its path never reaches the
+    // The reference's `?path=` names the materialized session-media copy of
+    // the FINAL (compressed) bytes, named by the final upload id — the copy
+    // still lands on disk for the engine, but its path never reaches the
     // wire.
     const mediaPath = join(sessionMediaDir(server!, id), `${finalFileId}.png`);
     expect(pngDimensions(await readFileEventually(mediaPath))).toEqual({ width: 2000, height: 1000 });
@@ -498,8 +498,8 @@ describe('server-v2 /api/v1 prompts', () => {
 
     // No compression caption when the bytes pass through unchanged, and the
     // reference addresses the client's original upload — no new upload. The
-    // `<image path>` tag folded into the media part instead of reaching the
-    // wire, so the media path never leaks to the client.
+    // daemon ref projects to `session_media`, so the media path never leaks
+    // to the client.
     const content = submitted.body.data.content as Array<Record<string, unknown>>;
     expect(content).toEqual([
       { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },

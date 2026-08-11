@@ -10,8 +10,8 @@
  *     is not a bus event and lands after the turn header. Upload media
  *     referenced by the prompt ride the same event (`promptAttachments`),
  *     projected as `attachment.upsert` entities plus `turn.attachmentIds` —
- *     one attachment per daemon-referenced upload, the paired `<media path>`
- *     tag already folded away engine-side.
+ *     one attachment per daemon-referenced upload — the daemon-ref part is
+ *     self-contained, no `<media path>` tag is authored engine-side.
  *   - Flush: at step/turn completion boundaries every open text/thinking frame
  *     of that step is re-emitted as a full-text `frame.upsert` — this is how
  *     'block'-grade subscribers (who never see `append`) reconverge.
@@ -1346,9 +1346,9 @@ export class AgentTranscriptProjector {
   private onPromptSteered(event: PromptSteeredEvent): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
     // The event carries raw engine content parts (daemon refs with
-    // `kimi-file://…?path=<abs>` plus the paired `<media path>` tag); the
-    // entity stores the Session-media wire projection, so the transient App
-    // upload, internal URL, and materialization path never reach consumers.
+    // `kimi-file://…?path=<abs>`); the entity stores the Session-media wire
+    // projection, so the transient App upload, internal URL, and
+    // materialization path never reach consumers.
     const active = this.upsertPrompt(event.activePromptId, (prev) => ({
       promptId: event.activePromptId,
       status: prev?.status ?? 'running',

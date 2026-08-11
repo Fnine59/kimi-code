@@ -21,7 +21,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService, type Step, type StepAssignment } from '#/agent/loop/loop';
 import type { StepRequest } from '#/agent/loop/stepRequest';
-import { buildDaemonFileUrl, foldMediaPathTagRefs } from '#/agent/media/mediaRef';
+import { buildDaemonFileUrl } from '#/agent/media/mediaRef';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { SessionMediaStoreService } from '#/agent/media/sessionMediaStoreService';
 import { IAgentPromptService, reservePrompt } from '#/agent/prompt/prompt';
@@ -473,21 +473,20 @@ describe('AgentPromptService daemon media intake', () => {
     return { files, open };
   }
 
-  function expectMediaPair(
+  function expectMediaRef(
     content: readonly ContentPart[],
     fileId: string,
     target: string,
     kind: 'image' | 'video' = 'image',
   ): void {
     expect(content).toEqual([
-      { type: 'text', text: `<${kind} path="${target}"></${kind}>` },
       kind === 'video'
         ? { type: 'video_url', videoUrl: { url: buildDaemonFileUrl(fileId, target) } }
         : { type: 'image_url', imageUrl: { url: buildDaemonFileUrl(fileId, target) } },
     ]);
   }
 
-  it('materializes a bare daemon reference into the session media dir and authors its paired tag', async () => {
+  it('materializes a bare daemon reference into the session media dir', async () => {
     const sessionDir = await tmpSessionDir();
     const files = new Map([['f_1', { name: 'pic.png', bytes: PNG_BYTES }]]);
     const { prompt } = harness({ sessionDir, files });
@@ -497,15 +496,10 @@ describe('AgentPromptService daemon media intake', () => {
 
     const target = join(sessionDir, 'media', 'f_1.png');
     expect(await readFile(target)).toEqual(PNG_BYTES);
-    expectMediaPair(handle.message.content, 'f_1', target);
-    const fold = foldMediaPathTagRefs(handle.message.content);
-    expect(fold.parts).toEqual([
-      { type: 'image_url', imageUrl: { url: buildDaemonFileUrl('f_1', target) } },
-    ]);
-    expect(fold.media).toEqual([{ kind: 'image', ref: { fileId: 'f_1', path: target }, path: target }]);
+    expectMediaRef(handle.message.content, 'f_1', target);
   });
 
-  it('authors a paired video tag for a bare video daemon reference', async () => {
+  it('materializes a bare video daemon reference into the session media dir', async () => {
     const sessionDir = await tmpSessionDir();
     const files = new Map([['f_v', { name: 'clip.mp4', bytes: PNG_BYTES, mime: 'video/mp4' }]]);
     const { prompt } = harness({ sessionDir, files });
@@ -515,7 +509,7 @@ describe('AgentPromptService daemon media intake', () => {
 
     const target = join(sessionDir, 'media', 'f_v.mp4');
     expect(await readFile(target)).toEqual(PNG_BYTES);
-    expectMediaPair(handle.message.content, 'f_v', target, 'video');
+    expectMediaRef(handle.message.content, 'f_v', target, 'video');
   });
 
   it('falls back to the shared cache dir when the session media store cannot write', async () => {
@@ -533,7 +527,7 @@ describe('AgentPromptService daemon media intake', () => {
 
     const target = join(homeDir, 'cache', 'f_1.png');
     expect(await readFile(target)).toEqual(PNG_BYTES);
-    expectMediaPair(handle.message.content, 'f_1', target);
+    expectMediaRef(handle.message.content, 'f_1', target);
   });
 
   it('returns the first idle media prompt before intake resolves', async () => {
@@ -549,7 +543,7 @@ describe('AgentPromptService daemon media intake', () => {
     await expect(handle.launched).resolves.toBeDefined();
   });
 
-  it('rewrites a client-cache tag+reference pair to the session media dir', async () => {
+  it('rewrites the reference of a client-submitted tag+ref pair, leaving the tag as text', async () => {
     const sessionDir = await tmpSessionDir();
     const files = new Map([['f_1', { name: 'pic.png', bytes: PNG_BYTES }]]);
     const { prompt } = harness({ sessionDir, files });
@@ -564,10 +558,13 @@ describe('AgentPromptService daemon media intake', () => {
     await handle.launched;
 
     const target = join(sessionDir, 'media', 'f_1.png');
-    expectMediaPair(handle.message.content, 'f_1', target);
+    expect(handle.message.content).toEqual([
+      { type: 'text', text: `<image path="${clientPath}"></image>` },
+      { type: 'image_url', imageUrl: { url: buildDaemonFileUrl('f_1', target) } },
+    ]);
   });
 
-  it('keeps an already-normalized pair untouched when intake runs over it again', async () => {
+  it('keeps an already-normalized reference untouched when intake runs over it again', async () => {
     const sessionDir = await tmpSessionDir();
     const files = new Map([['f_1', { name: 'pic.png', bytes: PNG_BYTES }]]);
     const { prompt } = harness({ sessionDir, files });
@@ -577,8 +574,8 @@ describe('AgentPromptService daemon media intake', () => {
     await first.launched;
     const second = await prompt.enqueue({ message: mediaMessage(...first.message.content) });
 
-    expectMediaPair(first.message.content, 'f_1', target);
-    expectMediaPair(second.message.content, 'f_1', target);
+    expectMediaRef(first.message.content, 'f_1', target);
+    expectMediaRef(second.message.content, 'f_1', target);
     expect((await readFile(target)).length).toBe(PNG_BYTES.length);
   });
 

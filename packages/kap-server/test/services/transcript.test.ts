@@ -1589,7 +1589,6 @@ describe('AgentTranscriptProjector', () => {
         promptIds: ['p2'],
         content: [
           { type: 'text', text: 'look at this' },
-          { type: 'text', text: '<image path="/abs/session/media/f_img1.png"></image>' },
           {
             type: 'image_url',
             imageUrl: { url: 'kimi-file://f_img1?path=%2Fabs%2Fsession%2Fmedia%2Ff_img1.png' },

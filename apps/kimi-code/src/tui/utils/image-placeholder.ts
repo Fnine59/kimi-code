@@ -8,10 +8,10 @@
  *     `ImageAttachment.original`). When the paste was uploaded to the daemon
  *     file store (`ImageAttachment.fileId`, v2 engine only), the placeholder
  *     instead expands to a bare `kimi-file://<id>` image part — the engine's
- *     prompt intake materializes the session copy and authors the paired
- *     `<image path>` tag, then resolves the reference at request time;
- *     without a `fileId` the inline base64 form is emitted unchanged
- *     (the only form the v1 engine accepts);
+ *     prompt intake materializes the session copy and rewrites the reference
+ *     with its `?path=`, making the part self-contained (no paired tag is
+ *     authored); without a `fileId` the inline base64 form is emitted
+ *     unchanged (the only form the v1 engine accepts);
  *   - video placeholders are copied into the shared cache (`getCacheDir()`)
  *     and expand to a `video_url` part pointing at the cache copy with a
  *     `file://` url. The v1 engine resolves that local reference inside the
@@ -131,8 +131,8 @@ export function extractMediaAttachments(
         if (attachment.fileId !== undefined) {
           // The bytes were uploaded to the daemon file store at paste time
           // (v2): reference them by a bare `kimi-file://` url — the engine's
-          // prompt intake materializes the session copy and authors the
-          // paired `<image path>` tag, so the edge stages no local copy.
+          // prompt intake materializes the session copy and rewrites the
+          // reference with its `?path=`, so the edge stages no local copy.
           parts.push({
             type: 'image_url',
             imageUrl: { url: buildDaemonFileUrl(attachment.fileId) },

@@ -756,7 +756,7 @@ describe('Agent loop', () => {
     expect(started).toEqual([{ promptId: 'sub-1' }]);
   });
 
-  it('folds an upload tag+ref pair into turn.started prompt and promptAttachments', async () => {
+  it('projects daemon-ref upload parts into turn.started prompt and promptAttachments', async () => {
     const started: Array<{ prompt?: string; promptAttachments?: unknown }> = [];
     const subscription = ctx.get(IEventBus).subscribe('turn.started', (event) => {
       started.push({ prompt: event.prompt, promptAttachments: event.promptAttachments });
@@ -770,7 +770,6 @@ describe('Agent loop', () => {
             role: 'user',
             content: [
               { type: 'text', text: 'what is this?' },
-              { type: 'text', text: '<image path="/cache/f_123.png"></image>' },
               {
                 type: 'image_url',
                 imageUrl: { url: 'kimi-file://f_123?path=%2Fcache%2Ff_123.png' },

@@ -9,10 +9,11 @@
  * prompt rides the event only for displayable user origins
  * ({@link isDisplayablePromptOrigin}) — a system-triggered turn (goal
  * continuation, subagent run, cron…) has internal steering text as its input,
- * which must never surface in transcripts. An upload's `<media path>` tag
- * text part is machine markup paired with its daemon-ref media part
- * (`foldMediaPathTagRefs`): the tag never reaches the prompt text, and the
- * referenced media rides as {@link TurnStartedEvent.promptAttachments}.
+ * which must never surface in transcripts. An upload's daemon-ref media part
+ * is self-contained (`daemonFileRefFromPart`): its kind comes from the part
+ * type and its materialization path from the reference, so the projection
+ * needs no tag+ref pairing — the referenced media rides as
+ * {@link TurnStartedEvent.promptAttachments}.
  * `turn.started` also echoes the prompt record id as
  * {@link TurnStartedEvent.promptId} when the turn was opened by a prompt
  * submission, so submitters can bind their own bookkeeping (e.g. staged
@@ -24,7 +25,7 @@ import type { KimiErrorPayload } from '#/_base/errors/serialize';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
 import type { FinishReason } from '#/kosong/contract/provider';
 import type { ContentPart, TextPart } from '#/kosong/contract/message';
-import { foldMediaPathTagRefs } from '#/agent/media/mediaRef';
+import { daemonFileRefFromPart } from '#/agent/media/mediaRef';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 export type TurnEndReason = 'completed' | 'cancelled' | 'failed' | 'blocked';
@@ -39,7 +40,7 @@ export type TurnInterruptReason =
 
 /**
  * One daemon-referenced upload carried by the turn-opening input. `name` is
- * a display label (the paired tag path's basename) — never an absolute path,
+ * a display label (the reference path's basename) — never an absolute path,
  * so the payload stays safe to forward onto client-facing event streams.
  */
 export interface TurnPromptAttachment {
@@ -58,10 +59,8 @@ export interface TurnStartedEvent {
 }
 
 /**
- * The displayable projection of the turn-opening input: the prompt text with
- * machine markup folded out, plus one entry per referenced upload. Both
- * halves come from a single `foldMediaPathTagRefs` pass, so callers take the
- * pair rather than re-running the pairing per field.
+ * The displayable projection of the turn-opening input: the prompt text,
+ * plus one entry per daemon-referenced upload.
  */
 export interface TurnPromptProjection {
   readonly text?: string;
@@ -69,11 +68,14 @@ export interface TurnPromptProjection {
 }
 
 export function projectTurnPrompt(input: readonly ContentPart[]): TurnPromptProjection {
-  const { parts, media } = foldMediaPathTagRefs(input);
-  const text = parts
+  const text = input
     .filter((part): part is TextPart => part.type === 'text')
     .map((part) => part.text)
     .join('');
+  const media = input.flatMap((part) => {
+    const daemonPart = daemonFileRefFromPart(part);
+    return daemonPart === undefined ? [] : [daemonPart];
+  });
   return {
     text: text.length > 0 ? text : undefined,
     attachments:
@@ -82,7 +84,7 @@ export function projectTurnPrompt(input: readonly ContentPart[]): TurnPromptProj
         : media.map((entry) => ({
             kind: entry.kind,
             fileId: entry.ref.fileId,
-            name: entry.path === undefined ? undefined : pathBaseName(entry.path),
+            name: entry.ref.path === undefined ? undefined : pathBaseName(entry.ref.path),
           })),
   };
 }

@@ -25,8 +25,7 @@
  * Kept free of any service / filesystem dependency so it is unit-testable.
  */
 
-import { foldMediaPathTagRefs } from '@moonshot-ai/agent-core-v2/agent/media/mediaRef';
-import type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
+import { matchSingleMediaPathTag } from '@moonshot-ai/agent-core-v2/agent/media/mediaRef';
 
 export interface ExtractedWireMessage {
   readonly role: 'user' | 'assistant';
@@ -157,45 +156,23 @@ interface ContentPartLike {
 }
 
 /**
- * Coerce one raw JSON part into a fold-safe `ContentPart`: well-formed parts
- * pass through, anything malformed becomes an inert empty text part (indices
- * — and therefore pairing adjacency — are preserved). The engine's fold is
- * not defensive against malformed holders, and wire lines are tolerated to be
- * corrupt.
- */
-function foldSafePart(part: unknown): ContentPart {
-  if (part === null || typeof part !== 'object') return { type: 'text', text: '' };
-  const p = part as ContentPartLike & {
-    readonly imageUrl?: unknown;
-    readonly videoUrl?: unknown;
-  };
-  if (p.type === 'text') {
-    return { type: 'text', text: typeof p.text === 'string' ? p.text : '' };
-  }
-  if (p.type === 'image_url' || p.type === 'video_url') {
-    const holder = p.type === 'image_url' ? p.imageUrl : p.videoUrl;
-    const url =
-      holder !== null && typeof holder === 'object'
-        ? (holder as { readonly url?: unknown }).url
-        : undefined;
-    if (typeof url !== 'string') return { type: 'text', text: '' };
-  }
-  return part as ContentPart;
-}
-
-/**
- * The user-visible text of a persisted message: text parts concatenated, with
- * the upload pair (`<media path>` tag + daemon-ref media part) folded the same
- * way as every other read model — a claimed tag is machine markup (and carries
- * the materialization path), so it must never reach the index. An unpaired
- * standalone tag stays as text.
+ * The user-visible text of a persisted message: text parts concatenated,
+ * skipping standalone `<media path>` tag parts. A standalone tag is machine
+ * markup (the upload residue of legacy sessions, or the model-facing degrade
+ * form) and carries the materialization path, so it must never reach the
+ * index — matching the other read models, which never treat it as searchable
+ * prose either. A tag embedded in larger user text is indexed with that text:
+ * stripping there would eat user content.
  */
 function textOfContent(content: unknown): string {
   if (!Array.isArray(content)) return '';
   let text = '';
-  const parts = (content as readonly unknown[]).map(foldSafePart);
-  for (const part of foldMediaPathTagRefs(parts).parts) {
-    if (part.type === 'text') text += part.text;
+  for (const raw of content as readonly unknown[]) {
+    if (raw === null || typeof raw !== 'object') continue;
+    const part = raw as ContentPartLike;
+    if (part.type !== 'text' || typeof part.text !== 'string') continue;
+    if (matchSingleMediaPathTag(part.text) !== undefined) continue;
+    text += part.text;
   }
   return text;
 }

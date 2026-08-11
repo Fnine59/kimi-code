@@ -32,30 +32,24 @@
  * requester, so a successful inline is memoized per file id (size-bounded)
  * and reused across steps, retries, and media-recovery reprojections instead
  * of re-reading and re-encoding the same bytes on every request; the degrade
- * forms are never memoized because they depend on the message's tag pairing.
- * The bytes are sniffed (`detectFileType`) and gated against the provider-
- * accepted image formats (`isModelAcceptedImageMime`) as defense in depth —
+ * forms are never memoized, so a stale snapshot path is re-resolved through
+ * the session media store on every request. The bytes are sniffed
+ * (`detectFileType`) and gated against the provider-accepted image formats
+ * (`isModelAcceptedImageMime`) as defense in depth —
  * the ingest edges already refuse unaccepted formats. A reference that
  * cannot be inlined (model without `image_in`, unreadable bytes, non-image
  * or unaccepted sniff) degrades through the reference's materialization
- * path: DROPPED silently only when the tag+ref pairing
- * (`pairMediaPathTagRefs`, shared with the read-model fold) claims this exact
- * reference — an adjacent standalone `<image path>` tag carrying the same
- * path already conveys it — otherwise the `<image path>` tag is SYNTHESIZED
- * from the reference path so a bare SDK-supplied reference still leaves the
- * model the path to re-open; a reference without a path swaps in an
+ * path: the `<image path>` tag is SYNTHESIZED from the resolved path so the
+ * model keeps a path to re-open; a reference without a path swaps in an
  * unavailable placeholder text. A message left with no parts at all keeps
  * one placeholder so its content never goes empty.
  *
- * The path offered to the model in any degrade form — a persisted claimed
- * tag refreshed in place, or a synthesized tag — is resolved through the
+ * The path offered to the model in any degrade form is resolved through the
  * session media store (`ISessionMediaStore`): the session-canonical copy
  * wins when it exists, the reference's persisted snapshot path is the
  * fallback, so a fork or a home relocation never hands the model a dead
- * path. A reference claimed by a persisted tag leaves only that refreshed
- * tag behind (video degrades included — a claimed reference never produces
- * a second tag), and a memoized video tag has its path refreshed on every
- * hit for the same reason.
+ * path. A memoized video tag has its path refreshed on every hit for the
+ * same reason.
  *
  * The plain-data state (`resolved`, the video memo) is registered into
  * `agentState` (`IAgentStateService`) and read/written through it. Bound at
@@ -78,12 +72,9 @@ import { detectFileType, MEDIA_SNIFF_BYTES } from './file-type';
 import { isModelAcceptedImageMime, normalizeImageMime } from './image-format-policy';
 import {
   buildMediaPathTag,
-  claimingRefIndex,
   type DaemonFileRef,
   daemonFileRefFromPart,
-  type MediaPathTagPairing,
   matchSingleMediaPathTag,
-  pairMediaPathTagRefs,
 } from './mediaRef';
 import { ISessionMediaStore } from './sessionMediaStore';
 import { IAgentMediaResolverService } from './mediaResolver';
@@ -148,30 +139,19 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
         continue;
       }
       const content: ContentPart[] = [];
-      // The fold's own pairing decides which references a tag claims: an
-      // image degrade may drop the part only when the pairing actually
-      // claims THIS reference (an adjacent standalone `<image path>` tag
-      // carrying the same path); a bare or unclaimed reference gets the tag
-      // synthesized from its path.
-      const pairing = pairMediaPathTagRefs(message.content);
       let sawVideoRef = false;
-      for (const [index, part] of message.content.entries()) {
-        if (part.type === 'text' && pairing.claimedTagIndices.has(index)) {
-          content.push(await this.refreshClaimedTag(message.content, pairing, index));
-          continue;
-        }
+      for (const part of message.content) {
         const daemonPart = daemonFileRefFromPart(part);
         if (daemonPart === undefined) {
           content.push(part);
           continue;
         }
         sawVideoRef ||= daemonPart.kind === 'video';
-        const claimed = pairing.claimedPathByRefIndex.has(index);
         const resolved =
           daemonPart.kind === 'video'
-            ? await this.resolveVideoPart(daemonPart.ref, requester, signal, claimed)
-            : await this.resolveImagePart(daemonPart.ref, requester, signal, claimed);
-        if (resolved !== undefined) content.push(resolved);
+            ? await this.resolveVideoPart(daemonPart.ref, requester, signal)
+            : await this.resolveImagePart(daemonPart.ref, requester, signal);
+        content.push(resolved);
       }
       // A message whose parts were all dropped keeps one kind-matching
       // placeholder so its content never goes empty.
@@ -191,22 +171,6 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     return this.mediaStore.resolveDisplayPath(ref.fileId, ref.path);
   }
 
-  private async refreshClaimedTag(
-    parts: readonly ContentPart[],
-    pairing: MediaPathTagPairing,
-    tagIndex: number,
-  ): Promise<ContentPart> {
-    const part = parts[tagIndex]!;
-    if (part.type !== 'text') return part;
-    const tag = matchSingleMediaPathTag(part.text);
-    const refIndex = tag === undefined ? undefined : claimingRefIndex(pairing, tagIndex);
-    const daemonPart = refIndex === undefined ? undefined : daemonFileRefFromPart(parts[refIndex]!);
-    if (tag === undefined || daemonPart === undefined) return part;
-    const path = await this.displayPath(daemonPart.ref);
-    if (path === undefined || path === tag.path) return part;
-    return { type: 'text', text: buildMediaPathTag(tag.kind, path) };
-  }
-
   // -------------------------------------------------------------------------
   // Image strategy — inline-only; no provider upload; the inline part itself
   // is memoized per file id, degrade forms are not.
@@ -216,10 +180,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     ref: DaemonFileRef,
     requester: ModelRequester,
     signal: AbortSignal | undefined,
-    hasAdjacentPathTag: boolean,
-  ): Promise<ContentPart | undefined> {
+  ): Promise<ContentPart> {
     if (!requester.model.capabilities.image_in) {
-      return degradedImage(hasAdjacentPathTag, await this.displayPath(ref));
+      return degradedImage(await this.displayPath(ref));
     }
     // Memo hit: the inline part is requester-independent, so a previous
     // successful resolve is reused without touching the bytes again.
@@ -233,7 +196,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       source = await this.readMedia(ref, signal);
     } catch {
       signal?.throwIfAborted();
-      return degradedImage(hasAdjacentPathTag, path);
+      return degradedImage(path);
     }
 
     const fileType = detectFileType(
@@ -241,8 +204,8 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       source.bytes.subarray(0, MEDIA_SNIFF_BYTES),
       'media',
     );
-    if (fileType.kind !== 'image') return degradedImage(hasAdjacentPathTag, path);
-    if (!isModelAcceptedImageMime(fileType.mimeType)) return degradedImage(hasAdjacentPathTag, path);
+    if (fileType.kind !== 'image') return degradedImage(path);
+    if (!isModelAcceptedImageMime(fileType.mimeType)) return degradedImage(path);
 
     const part: ContentPart = {
       type: 'image_url',
@@ -262,28 +225,21 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     ref: DaemonFileRef,
     requester: ModelRequester,
     signal: AbortSignal | undefined,
-    claimed: boolean,
-  ): Promise<ContentPart | undefined> {
+  ): Promise<ContentPart> {
     const model = requester.model;
     const providerKey = model.providerType ?? model.protocol;
     const cacheKey = `${ref.fileId}\0${providerKey}`;
 
     const memoed = this.resolved.get(cacheKey);
-    if (memoed !== undefined) return this.memoedOutcome(ref, memoed, claimed);
+    if (memoed !== undefined) return this.memoedOutcome(ref, memoed);
 
     const { part, memoize } = await this.resolveVideoUncached(ref, requester, cacheKey, signal);
-    if (part.type === 'text' && claimed) return undefined;
     if (memoize) this.resolved.set(cacheKey, part);
     return part;
   }
 
-  private async memoedOutcome(
-    ref: DaemonFileRef,
-    memoed: ContentPart,
-    claimed: boolean,
-  ): Promise<ContentPart | undefined> {
+  private async memoedOutcome(ref: DaemonFileRef, memoed: ContentPart): Promise<ContentPart> {
     if (memoed.type !== 'text') return memoed;
-    if (claimed) return undefined;
     const tag = matchSingleMediaPathTag(memoed.text);
     if (tag === undefined) return memoed;
     const path = await this.displayPath(ref);
@@ -392,9 +348,8 @@ function hasDaemonFileMediaPart(message: Message): boolean {
   return message.content.some((part) => daemonFileRefFromPart(part) !== undefined);
 }
 
-function degradedImage(hasAdjacentPathTag: boolean, path: string | undefined): ContentPart | undefined {
+function degradedImage(path: string | undefined): ContentPart {
   if (path === undefined) return unavailableMediaText('image');
-  if (hasAdjacentPathTag) return undefined;
   return { type: 'text', text: buildMediaPathTag('image', path) };
 }
 

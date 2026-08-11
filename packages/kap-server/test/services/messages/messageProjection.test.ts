@@ -40,15 +40,14 @@ describe('toProtocolMessage', () => {
     ]);
   });
 
-  it('folds the upload tag+ref pair into a single image part', () => {
-    // The persisted dual shape (`<image path>` tag text part + daemon-ref
-    // image part) is ONE upload: the tag is machine markup and must not
-    // reach the wire as a text part (clients would render the image twice).
+  it('projects a daemon-ref image part to a session_media source', () => {
+    // The persisted upload shape is a single self-contained daemon-ref part:
+    // the reference projects to the Session-owned copy, its materialization
+    // path never leaked.
     const msg: ContextMessage = {
       role: 'user',
       content: [
         { type: 'text', text: 'what is this?' },
-        { type: 'text', text: '<image path="/cache/pic.png"></image>' },
         { type: 'image_url', imageUrl: { url: 'kimi-file://file_9?path=%2Fcache%2Fpic.png' } },
       ],
       toolCalls: [],
@@ -60,9 +59,28 @@ describe('toProtocolMessage', () => {
     ]);
   });
 
+  it('keeps a legacy tag+ref pair as text plus the ref projection', () => {
+    // Legacy sessions persist an upload as the pair `<image path>` tag text
+    // part + daemon-ref media part. Tolerated, not folded: the tag passes
+    // through as text and the self-contained ref projects on its own.
+    const msg: ContextMessage = {
+      role: 'user',
+      content: [
+        { type: 'text', text: '<image path="/cache/pic.png"></image>' },
+        { type: 'image_url', imageUrl: { url: 'kimi-file://file_9?path=%2Fcache%2Fpic.png' } },
+      ],
+      toolCalls: [],
+    };
+
+    expect(toProtocolMessage(SESSION_ID, 0, msg, CREATED_AT).content).toEqual([
+      { type: 'text', text: '<image path="/cache/pic.png"></image>' },
+      { type: 'image', source: { kind: 'session_media', file_id: 'file_9' } },
+    ]);
+  });
+
   it('keeps a bare <media path> tag as text in user messages', () => {
-    // Without a paired daemon ref the tag is not machine markup the fold may
-    // claim: it passes through as a text part.
+    // A standalone tag without a daemon ref is user-visible text (or the
+    // legacy degrade form): it passes through as a text part.
     const msg: ContextMessage = {
       role: 'user',
       content: [

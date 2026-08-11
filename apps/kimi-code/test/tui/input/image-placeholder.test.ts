@@ -248,7 +248,8 @@ describe('extractMediaAttachments', () => {
       expect(r.hasMedia).toBe(true);
       expect(r.imageAttachmentIds).toEqual([1]);
       // No tag text part and no `?path=`: the engine's prompt intake
-      // materializes the session copy and authors the paired tag.
+      // materializes the session copy and rewrites the reference with its
+      // path — the part is self-contained, no paired tag is authored.
       expect(r.parts).toEqual([
         { type: 'text', text: 'describe ' },
         { type: 'image_url', imageUrl: { url: 'kimi-file://file-1' } },

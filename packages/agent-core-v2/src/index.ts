@@ -605,18 +605,12 @@ export * from '#/agent/media/registerMediaTools';
 export {
   buildDaemonFileUrl,
   buildMediaPathTag,
-  foldMediaPathTagRefs,
+  daemonFileRefFromPart,
   mediaExtensionForMime,
-  pairMediaPathTagRefs,
+  matchSingleMediaPathTag,
   parseDaemonFileUrl,
 } from '#/agent/media/mediaRef';
-export type {
-  DaemonFileRef,
-  FoldedMediaRef,
-  MediaKind,
-  MediaPathTagFold,
-  MediaPathTagPairing,
-} from '#/agent/media/mediaRef';
+export type { DaemonFileRef, MediaKind } from '#/agent/media/mediaRef';
 export * from '#/agent/media/sessionMediaStore';
 import '#/agent/media/sessionMediaStoreService';
 export * from '#/agent/media/kimiFileUrl';

@@ -19,14 +19,14 @@
  * never leaked to clients); any other url becomes `{ kind: 'url' }` carrying
  * the provider id. An `audio_url` part still flattens to a text marker.
  *
- * A user upload persists as the pair `<media path>` tag text part +
- * `kimi-file://` media part (`foldMediaPathTagRefs`): the pair folds into the
- * single media part — the tag is machine markup and must not reach the wire
- * as a text part (clients would render one upload twice). Assistant output
- * passes through verbatim.
+ * A daemon-ref media part is self-contained (`daemonFileRefFromPart`): the
+ * part type carries the kind and the reference the path, so the projection
+ * walks the raw parts directly — there is no tag+ref pairing to fold. A
+ * standalone `<media path>` tag text part is user text or the legacy degrade
+ * form and passes through verbatim. Assistant output passes through verbatim.
  */
 
-import { foldMediaPathTagRefs, parseDaemonFileUrl, type ContentPart, type ContextMessage } from '@moonshot-ai/agent-core-v2';
+import { daemonFileRefFromPart, parseDaemonFileUrl, type ContentPart, type ContextMessage } from '@moonshot-ai/agent-core-v2';
 
 import type { Message, MessageContent, MessageRole, ToolUseContent } from '../../protocol/message';
 
@@ -95,10 +95,10 @@ function buildProtocolContent(msg: ContextMessage): MessageContent[] {
     return [part];
   }
 
-  // User messages fold the upload pair (`<media path>` tag + daemon-ref media
-  // part) into the single media part; assistant output passes through verbatim.
-  const content = msg.role === 'user' ? foldMediaPathTagRefs(msg.content).parts : msg.content;
-  const base = content.map((p) => mapContentPart(p));
+  // User and assistant content both map part-by-part: daemon-ref media parts
+  // are self-contained and project to `session_media` sources inside
+  // `mapContentPart`; standalone `<media path>` tags stay text.
+  const base = msg.content.map((p) => mapContentPart(p));
 
   if (msg.role === 'assistant' && msg.toolCalls.length > 0) {
     for (const call of msg.toolCalls) {
@@ -126,39 +126,30 @@ function buildProtocolContent(msg: ContextMessage): MessageContent[] {
 /**
  * Prompt content (engine kosong parts) → the v1 wire `messageContentSchema`
  * shape. Shared by every prompt-queue surface — the REST prompt list, the
- * `prompt.steered` session event, and the transcript prompt entity — so the
- * upload pair (`<media path>` tag + daemon-ref media part) folds into the
- * single media part and a daemon reference projects back to
+ * `prompt.steered` session event, and the transcript prompt entity — so a
+ * self-contained daemon-ref media part projects back to
  * `{ kind: 'session_media', file_id }`: neither the transient App upload, the
  * internal `kimi-file://` URL, nor the materialization path becomes the
  * stored read-model contract.
  */
 export function projectPromptContentParts(content: readonly ContentPart[]): MessageContent[] {
   const parts: MessageContent[] = [];
-  for (const part of foldMediaPathTagRefs(content).parts) {
+  for (const part of content) {
+    const daemonRef = daemonFileRefFromPart(part);
+    if (daemonRef !== undefined) {
+      parts.push({
+        type: daemonRef.kind,
+        source: { kind: 'session_media', file_id: daemonRef.ref.fileId },
+      });
+      continue;
+    }
     if (part.type === 'text') parts.push({ type: 'text', text: part.text });
     else if (part.type === 'image_url') {
-      const ref = parseDaemonFileUrl(part.imageUrl.url);
-      if (ref !== undefined) {
-        parts.push({
-          type: 'image',
-          source: { kind: 'session_media', file_id: ref.fileId },
-        });
-        continue;
-      }
       const match = /^data:([^;]+);base64,(.*)$/.exec(part.imageUrl.url);
       parts.push(match === null
         ? { type: 'image', source: { kind: 'url', url: part.imageUrl.url, id: part.imageUrl.id } }
         : { type: 'image', source: { kind: 'base64', media_type: match[1]!, data: match[2]! } });
     } else if (part.type === 'video_url') {
-      const ref = parseDaemonFileUrl(part.videoUrl.url);
-      if (ref !== undefined) {
-        parts.push({
-          type: 'video',
-          source: { kind: 'session_media', file_id: ref.fileId },
-        });
-        continue;
-      }
       const match = /^data:([^;]+);base64,(.*)$/.exec(part.videoUrl.url);
       parts.push(match === null
         ? { type: 'video', source: { kind: 'url', url: part.videoUrl.url, id: part.videoUrl.id } }

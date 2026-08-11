@@ -316,17 +316,15 @@ describe('buildExportMarkdown', () => {
     expect(md).toContain('deep thought');
   });
 
-  it('folds an upload tag+ref pair out of the exported user message', () => {
-    // An uploaded image persists as `<image path>` tag text + a `kimi-file://`
-    // image part; the claimed tag is machine markup carrying the
-    // materialization path — the export keeps the real text and `[image]`,
-    // never the path or the internal url.
+  it('renders an uploaded image daemon ref as [image] in the exported user message', () => {
+    // An uploaded image persists as a self-contained `kimi-file://` part —
+    // the export keeps the real text and `[image]`, never the materialization
+    // path or the internal url.
     const msgs: ContextMessage[] = [
       {
         role: 'user',
         content: [
           { type: 'text', text: 'what is this? ' },
-          { type: 'text', text: '<image path="/Users/alice/media/f_1.png"></image>' },
           {
             type: 'image_url',
             imageUrl: { url: 'kimi-file://f_1?path=%2FUsers%2Falice%2Fmedia%2Ff_1.png' },
