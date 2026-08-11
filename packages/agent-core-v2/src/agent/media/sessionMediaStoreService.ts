@@ -99,6 +99,7 @@ export class SessionMediaStoreService implements ISessionMediaStore {
       const size = await this.storage.size(scope, key);
       if (size === undefined) continue;
       return {
+        path: this.storage.pathFor(scope, key),
         name: metadata?.name ?? key,
         mediaType: metadata?.mediaType ?? this.mediaTypeForKey(key),
         size,

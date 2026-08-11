@@ -53,7 +53,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import {
   assertPromptFileRefs,
-  assertPromptSessionMediaRefs,
+  resolvePromptSessionMediaRefs,
   contentToCoreParts,
   resolvePromptMediaFiles,
   type PromptMediaPreparation,
@@ -223,7 +223,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         // in session metadata, or touch the session's controls.
         await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));
         const session = await resolveSession(core, session_id);
-        await assertPromptSessionMediaRefs(
+        const sessionMediaPaths = await resolvePromptSessionMediaRefs(
           req.body.content,
           session.accessor.get(ISessionMediaStore),
         );
@@ -237,7 +237,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         // `kimi-file://` references; the engine's prompt intake materializes
         // the session copy, authors the paired media-path tag, and resolves
         // them to a provider form (upload / inline / path tag) at request
-        // time, so the edge no longer uploads.
+        // time, so the edge no longer uploads. Already-canonical
+        // `session_media` parts receive their private canonical path here;
+        // that path is never projected back to the client.
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
         preparedMedia = await resolvePromptMediaFiles(
           req.body.content,
@@ -286,7 +288,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             throw error;
           }
         }
-        const parts = contentToCoreParts(resolvedContent);
+        const parts = contentToCoreParts(resolvedContent, sessionMediaPaths);
         await applyPromptMetadataUpdate({
           metadata: session.accessor.get(ISessionMetadata),
           eventService: core.accessor.get(IEventService),

@@ -116,7 +116,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import {
   assertPromptFileRefs,
-  assertPromptSessionMediaRefs,
+  resolvePromptSessionMediaRefs,
   contentToCoreParts,
   resolvePromptMediaFiles,
   type PromptMediaPreparation,
@@ -332,7 +332,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
             );
           }
           await assertPromptFileRefs(attachments, core.accessor.get(IFileService));
-          await assertPromptSessionMediaRefs(
+          const sessionMediaPaths = await resolvePromptSessionMediaRefs(
             attachments,
             resolved.handle.accessor.get(ISessionMediaStore),
           );
@@ -348,7 +348,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
               resolveAttachmentsDir: async () => join(sessionDir, 'attachments'),
             },
           );
-          attachmentParts.push(...contentToCoreParts(preparedMedia.content));
+          attachmentParts.push(...contentToCoreParts(preparedMedia.content, sessionMediaPaths));
         }
         const agent = await ensureMainAgent(resolved.handle);
         // The engine applies the prompt-metadata update itself (main agent

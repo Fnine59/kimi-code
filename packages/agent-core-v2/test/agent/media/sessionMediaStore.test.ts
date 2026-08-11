@@ -112,6 +112,7 @@ describe('SessionMediaStoreService', () => {
     const file = await store.open('f_1');
 
     expect(file).toMatchObject({
+      path: join(homeDir, 'cache', 'f_1.mp4'),
       name: 'original clip.mp4',
       mediaType: 'video/mp4',
       size: BYTES.length,
@@ -190,6 +191,7 @@ describe('SessionMediaStoreService', () => {
     const file = await store.open('f_1');
 
     expect(file).toMatchObject({
+      path: join(sessionDir, 'media', 'f_1.mp4'),
       name: 'original clip.mp4',
       mediaType: 'video/mp4',
       size: BYTES.length,
@@ -278,6 +280,7 @@ it('retains canonical bytes without inventing a path for a non-filesystem backen
   const canonical = await store.read('f_1');
   expect(canonical?.name).toBe('f_1.mp4');
   expect(canonical === undefined ? undefined : Buffer.from(canonical.data)).toEqual(BYTES);
+  expect((await store.open('f_1'))?.path).toBeUndefined();
   disposables.dispose();
 });
 

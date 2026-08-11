@@ -2,15 +2,17 @@
  * Prompt media/attachment pipeline shared by the prompt-submission and
  * skill-activation edges.
  *
- * Three stages, in the order both routes apply them:
+ * Four stages, in the order both routes apply them:
  *   1. `assertPromptFileRefs` — fail fast on stale or mis-kinded `file_id`
  *      references before anything session-scoped is resolved or mutated.
- *   2. `resolvePromptMediaFiles` — materialize uploads into session-local
- *      copies: arbitrary files become path-referenced attachments (a text
- *      notice the model opens with the Read tool), images are format-gated,
- *      compressed, and carried as internal `kimi-file://` references just
- *      like videos.
- *   3. `contentToCoreParts` — project the resolved wire content onto engine
+ *   2. `resolvePromptSessionMediaRefs` — validate canonical session media and
+ *      collect its private host paths for the inbound engine representation.
+ *   3. `resolvePromptMediaFiles` — resolve uploads into their context form:
+ *      arbitrary files become path-referenced attachments (a text notice the
+ *      model opens with the Read tool), images are format-gated and
+ *      compressed, and image/video uploads enter context as bare internal
+ *      `kimi-file://` references the engine's prompt intake materializes.
+ *   4. `contentToCoreParts` — project the resolved wire content onto engine
  *      `ContentPart`s.
  *
  * Extracted from `routes/prompts.ts` so `routes/skills.ts` can run the exact
@@ -73,31 +75,36 @@ export async function assertPromptFileRefs(content: WireContent, store: IFileSer
   }
 }
 
-export async function assertPromptSessionMediaRefs(
+export async function resolvePromptSessionMediaRefs(
   content: WireContent,
   store: ISessionMediaStore,
-): Promise<void> {
+): Promise<ReadonlyMap<string, string>> {
+  const paths = new Map<string, string>();
   for (const part of content) {
     if (
-      (part.type === 'image' || part.type === 'video') &&
-      part.source.kind === 'session_media' &&
-      (await store.open(part.source.file_id)) === undefined
-    ) {
-      throw fileNotFoundError(part.source.file_id);
-    }
+      (part.type !== 'image' && part.type !== 'video') ||
+      part.source.kind !== 'session_media'
+    ) continue;
+    const file = await store.open(part.source.file_id);
+    if (file === undefined) throw fileNotFoundError(part.source.file_id);
+    if (file.path !== undefined) paths.set(part.source.file_id, file.path);
   }
+  return paths;
 }
 
-export function contentToCoreParts(content: WireContent): ContentPart[] {
+export function contentToCoreParts(
+  content: WireContent,
+  sessionMediaPaths: ReadonlyMap<string, string>,
+): ContentPart[] {
   const parts: ContentPart[] = [];
   for (const part of content) {
     if (part.type === 'text') parts.push({ type: 'text', text: part.text });
     else if (part.type === 'image' && part.source.kind === 'url') parts.push({ type: 'image_url', imageUrl: { url: part.source.url, id: part.source.id } });
     else if (part.type === 'image' && part.source.kind === 'base64') parts.push({ type: 'image_url', imageUrl: { url: `data:${part.source.media_type};base64,${part.source.data}` } });
-    else if (part.type === 'image' && part.source.kind === 'session_media') parts.push({ type: 'image_url', imageUrl: { url: buildDaemonFileUrl(part.source.file_id) } });
+    else if (part.type === 'image' && part.source.kind === 'session_media') parts.push({ type: 'image_url', imageUrl: { url: buildDaemonFileUrl(part.source.file_id, sessionMediaPaths.get(part.source.file_id)) } });
     else if (part.type === 'video' && part.source.kind === 'url') parts.push({ type: 'video_url', videoUrl: { url: part.source.url, id: part.source.id } });
     else if (part.type === 'video' && part.source.kind === 'base64') parts.push({ type: 'video_url', videoUrl: { url: `data:${part.source.media_type};base64,${part.source.data}` } });
-    else if (part.type === 'video' && part.source.kind === 'session_media') parts.push({ type: 'video_url', videoUrl: { url: buildDaemonFileUrl(part.source.file_id) } });
+    else if (part.type === 'video' && part.source.kind === 'session_media') parts.push({ type: 'video_url', videoUrl: { url: buildDaemonFileUrl(part.source.file_id, sessionMediaPaths.get(part.source.file_id)) } });
   }
   return parts;
 }

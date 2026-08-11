@@ -26,6 +26,7 @@ export interface SessionMediaReadRange {
 }
 
 export interface SessionMediaFile {
+  readonly path?: string;
   readonly name: string;
   readonly mediaType: string;
   readonly size: number;

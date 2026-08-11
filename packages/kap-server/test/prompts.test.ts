@@ -523,19 +523,43 @@ describe('server-v2 /api/v1 prompts', () => {
       content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
     });
     expect(first.body.code).toBe(0);
-    await expectSessionMedia(server!, id, `${uploaded.id}.png`, smallPng);
+    const canonicalPath = await expectSessionMedia(server!, id, `${uploaded.id}.png`, smallPng);
     await server!.core.accessor.get(IFileService).delete(uploaded.id);
 
     const replayed = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
       content: [
+        { type: 'text', text: 'replay the stored image' },
         { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },
       ],
     });
 
     expect(replayed.body.code).toBe(0);
     expect(replayed.body.data.content).toEqual([
+      { type: 'text', text: 'replay the stored image' },
       { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },
     ]);
+
+    const session = getLiveSessionById(server!.core.accessor, id);
+    const main = session!.accessor.get(IAgentLifecycleService).get('main')!;
+    await vi.waitFor(() => {
+      const replayedMessage = main.accessor
+        .get(IAgentContextMemoryService)
+        .get()
+        .find(
+          (message) =>
+            message.role === 'user' &&
+            message.content.some(
+              (part) => part.type === 'text' && part.text === 'replay the stored image',
+            ),
+        );
+      expect(replayedMessage).toBeDefined();
+      expect(replayedMessage!.content).toContainEqual({
+        type: 'image_url',
+        imageUrl: {
+          url: `kimi-file://${uploaded.id}?path=${encodeURIComponent(canonicalPath)}`,
+        },
+      });
+    });
   });
 
   it('falls back to the shared cache dir when the session media dir is not writable', async () => {
