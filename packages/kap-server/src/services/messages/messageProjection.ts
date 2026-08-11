@@ -14,10 +14,10 @@
  *
  * A user `image_url` / `video_url` part projects to a structured `image` /
  * `video` content part so REST consumers can render it: an internal
- * `kimi-file://<id>?path=…` reference becomes `{ kind: 'file', file_id }`
- * (the materialization path is stripped, never leaked to clients); any other
- * url becomes `{ kind: 'url' }` carrying the provider id. An `audio_url`
- * part still flattens to a text marker.
+ * `kimi-file://<id>?path=…` reference becomes
+ * `{ kind: 'session_media', file_id }` (the materialization path is stripped,
+ * never leaked to clients); any other url becomes `{ kind: 'url' }` carrying
+ * the provider id. An `audio_url` part still flattens to a text marker.
  *
  * A user upload persists as the pair `<media path>` tag text part +
  * `kimi-file://` media part (`foldMediaPathTagRefs`): the pair folds into the
@@ -50,11 +50,11 @@ function mapContentPart(part: ContextMessage['content'][number]): MessageContent
         : { type: 'thinking', thinking: part.think };
     }
     case 'image_url': {
-      // Same daemon-reference rule as `video_url`: an internal
-      // `kimi-file://<id>?path=…` reference becomes the upload it came from.
+      // Same daemon-reference rule as `video_url`: an internal reference
+      // projects to the Session-owned copy created during prompt intake.
       const ref = parseDaemonFileUrl(part.imageUrl.url);
       return ref !== undefined
-        ? { type: 'image', source: { kind: 'file', file_id: ref.fileId } }
+        ? { type: 'image', source: { kind: 'session_media', file_id: ref.fileId } }
         : { type: 'image', source: { kind: 'url', url: part.imageUrl.url, id: part.imageUrl.id } };
     }
     case 'audio_url':
@@ -62,7 +62,7 @@ function mapContentPart(part: ContextMessage['content'][number]): MessageContent
     case 'video_url': {
       const ref = parseDaemonFileUrl(part.videoUrl.url);
       return ref !== undefined
-        ? { type: 'video', source: { kind: 'file', file_id: ref.fileId } }
+        ? { type: 'video', source: { kind: 'session_media', file_id: ref.fileId } }
         : { type: 'video', source: { kind: 'url', url: part.videoUrl.url, id: part.videoUrl.id } };
     }
   }
@@ -129,8 +129,9 @@ function buildProtocolContent(msg: ContextMessage): MessageContent[] {
  * `prompt.steered` session event, and the transcript prompt entity — so the
  * upload pair (`<media path>` tag + daemon-ref media part) folds into the
  * single media part and a daemon reference projects back to
- * `{ kind: 'file', file_id }`: neither the internal `kimi-file://` URL nor
- * the materialization path ever reaches a client.
+ * `{ kind: 'session_media', file_id }`: neither the transient App upload, the
+ * internal `kimi-file://` URL, nor the materialization path becomes the
+ * stored read-model contract.
  */
 export function projectPromptContentParts(content: readonly ContentPart[]): MessageContent[] {
   const parts: MessageContent[] = [];
@@ -139,7 +140,10 @@ export function projectPromptContentParts(content: readonly ContentPart[]): Mess
     else if (part.type === 'image_url') {
       const ref = parseDaemonFileUrl(part.imageUrl.url);
       if (ref !== undefined) {
-        parts.push({ type: 'image', source: { kind: 'file', file_id: ref.fileId } });
+        parts.push({
+          type: 'image',
+          source: { kind: 'session_media', file_id: ref.fileId },
+        });
         continue;
       }
       const match = /^data:([^;]+);base64,(.*)$/.exec(part.imageUrl.url);
@@ -149,7 +153,10 @@ export function projectPromptContentParts(content: readonly ContentPart[]): Mess
     } else if (part.type === 'video_url') {
       const ref = parseDaemonFileUrl(part.videoUrl.url);
       if (ref !== undefined) {
-        parts.push({ type: 'video', source: { kind: 'file', file_id: ref.fileId } });
+        parts.push({
+          type: 'video',
+          source: { kind: 'session_media', file_id: ref.fileId },
+        });
         continue;
       }
       const match = /^data:([^;]+);base64,(.*)$/.exec(part.videoUrl.url);

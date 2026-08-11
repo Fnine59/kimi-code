@@ -1347,8 +1347,8 @@ export class AgentTranscriptProjector {
     const ops: TranscriptOperation[] = [];
     // The event carries raw engine content parts (daemon refs with
     // `kimi-file://…?path=<abs>` plus the paired `<media path>` tag); the
-    // entity stores the wire-projected form, so the internal URL and the
-    // materialization path never reach transcript consumers.
+    // entity stores the Session-media wire projection, so the transient App
+    // upload, internal URL, and materialization path never reach consumers.
     const active = this.upsertPrompt(event.activePromptId, (prev) => ({
       promptId: event.activePromptId,
       status: prev?.status ?? 'running',

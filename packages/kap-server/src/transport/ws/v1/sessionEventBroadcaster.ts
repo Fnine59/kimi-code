@@ -1143,9 +1143,10 @@ export class SessionEventBroadcaster {
     } else if (event.type === 'prompt.steered' || event.type === 'prompt.queued') {
       // `content` arrives as raw engine content parts: daemon references carry
       // `kimi-file://…?path=<abs>` and a paired `<media path>` tag text part.
-      // The pair folds into one `{kind:'file'}` part, so neither the internal
-      // URL nor the materialization path leaves the process (for steered, the
-      // declared `promptSteeredEventSchema` content is `messageContentSchema`).
+      // The pair folds into one `{kind:'session_media'}` part, so neither the
+      // transient upload, the internal URL, nor the materialization path leaves
+      // the process (for steered, the declared `promptSteeredEventSchema`
+      // content is `messageContentSchema`).
       // Projecting before the journal write covers live fan-out and every
       // replay path with one mapping.
       wireEvent = {

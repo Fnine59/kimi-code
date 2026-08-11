@@ -11,8 +11,8 @@
  *   - a within-budget paste is stored byte-for-byte (fast path), with no
  *     original recorded
  *   - on the v2 engine the final bytes are uploaded to the daemon file store
- *     and the attachment carries the returned `fileId`; an upload failure
- *     leaves the paste on the inline base64 fallback
+ *     with a crash-recovery TTL, and the attachment carries the returned id
+ *     and expiry; an upload failure leaves the paste on the inline fallback
  */
 
 import { mkdtemp, readFile, rm, unlink } from 'node:fs/promises';
@@ -118,7 +118,7 @@ function uploadFileMock(id: string) {
   return vi.fn(async (
     _data: Uint8Array,
     _opts: { name: string; mimeType?: string; expiresInSec?: number },
-  ) => ({ id }));
+  ) => ({ id, expires_at: '2030-01-02T03:04:05.000Z' }));
 }
 
 /**
@@ -320,7 +320,7 @@ describe('clipboard image paste compression', () => {
     expect(props['outcome']).toBe('compressed');
   });
 
-  it('uploads the final bytes to the daemon file store on the v2 engine', async () => {
+  it('uploads final bytes with a crash-recovery TTL while the staging lease owns normal cleanup', async () => {
     const small = await solidPng(80, 80);
     readClipboardMedia.mockResolvedValue({ kind: 'image', bytes: small, mimeType: 'image/png' });
     const uploadFile = uploadFileMock('file-1');
@@ -331,6 +331,7 @@ describe('clipboard image paste compression', () => {
     const att = store.get(1);
     if (att?.kind !== 'image') throw new Error('expected image attachment');
     expect(att.fileId).toBe('file-1');
+    expect(att.fileExpiresAt).toBe(Date.parse('2030-01-02T03:04:05.000Z'));
     expect(uploadFile).toHaveBeenCalledTimes(1);
     const [data, opts] = uploadFile.mock.calls[0]!;
     expect(new Uint8Array(data)).toEqual(small);

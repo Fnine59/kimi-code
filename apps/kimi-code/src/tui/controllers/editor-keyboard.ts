@@ -1,6 +1,6 @@
 import { unlink } from 'node:fs/promises';
 
-import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
+import type { FileMeta, KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
 import { compressImageForModel, persistOriginalImage, sessionMediaOriginalsDir } from '@moonshot-ai/kimi-code-sdk';
 
 import { ClipboardMediaError, readClipboardMedia } from '#/utils/clipboard/clipboard-image';
@@ -15,6 +15,7 @@ import {
   LLM_NOT_SET_MESSAGE,
   NO_ACTIVE_SESSION_MESSAGE,
 } from '../constant/kimi-tui';
+import { IMAGE_STAGING_TTL_SECONDS } from '../constant/media';
 import { formatErrorMessage } from '../utils/event-payload';
 import type { ImageAttachment, ImageAttachmentStore } from '../utils/image-attachment-store';
 import { extractMediaAttachments, imageExtensionForMime } from '../utils/image-placeholder';
@@ -565,7 +566,7 @@ export class EditorKeyboardController {
       : undefined;
     // v2 only: upload the final bytes to the daemon file store so submit-time
     // expansion emits a `kimi-file://` reference instead of inline base64.
-    const fileId = await this.uploadImageToDaemonFileStore(
+    const uploaded = await this.uploadImageToDaemonFileStore(
       compressed.changed ? compressed.data : originalBytes,
       compressed.changed ? compressed.mimeType : originalMime,
     );
@@ -575,10 +576,11 @@ export class EditorKeyboardController {
       width: compressed.width || originalWidth,
       height: compressed.height || originalHeight,
       original,
-      fileId,
+      fileId: uploaded?.id,
+      fileExpiresAt: parseExpiry(uploaded),
     });
-    if (completed === undefined && fileId !== undefined) {
-      await this.host.harness?.deleteFile(fileId).catch(() => undefined);
+    if (completed === undefined && uploaded !== undefined) {
+      await this.host.harness?.deleteFile(uploaded.id).catch(() => undefined);
     }
     if (completed === undefined && original !== undefined && original.path !== null) {
       await unlink(original.path).catch(() => undefined);
@@ -595,7 +597,7 @@ export class EditorKeyboardController {
   private async uploadImageToDaemonFileStore(
     bytes: Uint8Array,
     mime: string,
-  ): Promise<string | undefined> {
+  ): Promise<FileMeta | undefined> {
     if (!this.host.engineV2) return undefined;
     const harness = this.host.harness;
     if (harness === undefined) return undefined;
@@ -603,9 +605,9 @@ export class EditorKeyboardController {
       const meta = await harness.uploadFile(bytes, {
         name: `pasted-image.${imageExtensionForMime(mime)}`,
         mimeType: mime,
-        expiresInSec: 60 * 60,
+        expiresInSec: IMAGE_STAGING_TTL_SECONDS,
       });
-      return meta.id;
+      return meta;
     } catch {
       return undefined;
     }
@@ -651,4 +653,10 @@ export class EditorKeyboardController {
       this.host.setExternalEditorRunning(false);
     }
   }
+}
+
+function parseExpiry(meta: FileMeta | undefined): number | undefined {
+  if (meta?.expires_at === undefined) return undefined;
+  const value = Date.parse(meta.expires_at);
+  return Number.isFinite(value) ? value : undefined;
 }

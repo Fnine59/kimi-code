@@ -1,3 +1,8 @@
+/**
+ * Media placeholder expansion and rewrite contracts, including dispatch-time
+ * fallback from expiring daemon uploads to bytes retained by the TUI.
+ */
+
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +17,7 @@ import { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 import {
   extractMediaAttachments,
   makeExtractionResendable,
+  refreshExpiringImageFileRefs,
   rewriteMediaPlaceholders,
 } from '#/tui/utils/image-placeholder';
 import { getCacheDir } from '#/utils/paths';
@@ -256,6 +262,32 @@ describe('extractMediaAttachments', () => {
     } finally {
       cleanup();
     }
+  });
+
+  it('falls back to retained bytes when an uploaded image is too close to expiry', () => {
+    const store = new ImageAttachmentStore();
+    const att = store.addImage(
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+      'image/png',
+      640,
+      480,
+      undefined,
+      'file-1',
+      1_060_000,
+    );
+
+    const parts = refreshExpiringImageFileRefs(
+      [{ type: 'image_url', imageUrl: { url: 'kimi-file://file-1' } }],
+      [att.id],
+      store,
+      1_000_000,
+    );
+
+    expect(parts).toEqual([
+      { type: 'image_url', imageUrl: { url: 'data:image/png;base64,iVBORw==' } },
+    ]);
+    expect(att.fileId).toBeUndefined();
+    expect(att.fileExpiresAt).toBeUndefined();
   });
 
   it('rebuilds an uploaded image as inline bytes for a new-session resend', () => {

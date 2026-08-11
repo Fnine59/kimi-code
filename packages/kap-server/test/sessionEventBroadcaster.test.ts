@@ -889,7 +889,9 @@ describe('SessionEventBroadcaster', () => {
       );
       await bc.getCursor('s1'); // drain
 
-      const expected = [{ type: 'image', source: { kind: 'file', file_id: 'f_img1' } }];
+      const expected = [
+        { type: 'image', source: { kind: 'session_media', file_id: 'f_img1' } },
+      ];
       const live = envelopes.find((e) => e.type === type);
       expect(live).toBeDefined();
       expect((live!.payload as { content: unknown }).content).toEqual(expected);

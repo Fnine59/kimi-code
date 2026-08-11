@@ -95,6 +95,36 @@ describe('SessionMediaStoreService', () => {
     expect(await readFile(target!)).toEqual(BYTES);
   });
 
+  it('reads fallback bytes when the canonical copy is unavailable', async () => {
+    const target = await store.materializeFallback(input());
+
+    await expect(store.read('f_1', target)).resolves.toEqual({
+      data: BYTES,
+      name: 'f_1.mp4',
+    });
+  });
+
+  it('opens fallback media with its persisted download metadata', async () => {
+    await store.materializeFallback(
+      input({ name: 'original clip.mp4', mimeType: 'video/mp4' }),
+    );
+
+    const file = await store.open('f_1');
+
+    expect(file).toMatchObject({
+      name: 'original clip.mp4',
+      mediaType: 'video/mp4',
+      size: BYTES.length,
+    });
+    expect(file === undefined ? undefined : Buffer.from(await collect(file.stream()))).toEqual(BYTES);
+  });
+
+  it('resolves the display path to the fallback copy when the canonical copy is unavailable', async () => {
+    const target = await store.materializeFallback(input());
+
+    await expect(store.resolveDisplayPath('f_1', '/stale/elsewhere.mp4')).resolves.toBe(target);
+  });
+
   it('keeps a same-size copy without re-reading the stream', async () => {
     await store.materialize(input());
     const again = await store.materialize(

@@ -48,6 +48,7 @@ import {
 
 import { getCacheDir } from '#/utils/paths';
 
+import { IMAGE_FILE_REF_MIN_REMAINING_MS } from '../constant/media';
 import type {
   ImageAttachment,
   ImageAttachmentStore,
@@ -148,12 +149,13 @@ export function extractMediaAttachments(
     pushText(parts, tail);
 
     store.retainFileIds(imageAttachmentIds);
+    const freshParts = refreshExpiringImageFileRefs(parts, imageAttachmentIds, store);
     return {
       // Text-only submissions drop the synthesised parts array — the
       // caller's contract is "parts is meaningful iff hasMedia", and
       // emitting a stray TextPart confuses consumers that branch on
       // `parts.length > 0`.
-      parts: hasMedia ? parts : [],
+      parts: hasMedia ? freshParts : [],
       hasMedia,
       imageAttachmentIds,
       videoAttachmentIds,
@@ -164,6 +166,47 @@ export function extractMediaAttachments(
     cleanupStagingPaths(stagingPaths);
     throw error;
   }
+}
+
+/**
+ * Replace daemon refs that may expire before validation reaches the server
+ * with the attachment's retained bytes. Called both at extraction time and
+ * again when a queued/cache-hint submission is actually dispatched.
+ */
+export function refreshExpiringImageFileRefs(
+  parts: readonly PromptPart[],
+  imageAttachmentIds: readonly number[],
+  store: ImageAttachmentStore,
+  now = Date.now(),
+): PromptPart[] {
+  if (imageAttachmentIds.length === 0) return [...parts];
+  let imageIndex = 0;
+  let changed = false;
+  const next = parts.map((part) => {
+    if (part.type !== 'image_url') return part;
+    const attachmentId = imageAttachmentIds[imageIndex++];
+    if (attachmentId === undefined || !part.imageUrl.url.startsWith('kimi-file://')) return part;
+    const attachment = store.get(attachmentId);
+    if (attachment?.kind !== 'image') return part;
+
+    const fileId = attachment.fileId;
+    const expiresAt = attachment.fileExpiresAt;
+    const usable =
+      fileId !== undefined &&
+      (expiresAt === undefined || expiresAt - now > IMAGE_FILE_REF_MIN_REMAINING_MS);
+    if (usable) {
+      const url = buildDaemonFileUrl(fileId);
+      if (url === part.imageUrl.url) return part;
+      changed = true;
+      return { ...part, imageUrl: { ...part.imageUrl, url } };
+    }
+
+    attachment.fileId = undefined;
+    attachment.fileExpiresAt = undefined;
+    changed = true;
+    return imagePartForAttachment(attachment);
+  });
+  return changed ? next : [...parts];
 }
 
 /**

@@ -49,6 +49,8 @@ export interface ImageAttachment {
    * means the inline form is used.
    */
   fileId?: string;
+  /** Epoch milliseconds when the daemon staging upload expires. */
+  fileExpiresAt?: number;
   /** Rendered placeholder string, e.g. `[image #1 (640×480)]`. */
   readonly placeholder: string;
 }
@@ -82,6 +84,7 @@ export class ImageAttachmentStore {
     height: number,
     original?: ImageAttachmentOriginal,
     fileId?: string,
+    fileExpiresAt?: number,
   ): ImageAttachment {
     const id = this.nextId;
     this.nextId += 1;
@@ -94,6 +97,7 @@ export class ImageAttachmentStore {
       height,
       original,
       fileId,
+      fileExpiresAt,
       placeholder: formatPlaceholder(id, width, height),
     };
     this.byId.set(id, attachment);
@@ -134,6 +138,7 @@ export class ImageAttachmentStore {
       height: number;
       original?: ImageAttachmentOriginal;
       fileId?: string;
+      fileExpiresAt?: number;
     },
   ): ImageAttachment | undefined {
     const current = this.byId.get(attachment.id);
@@ -145,6 +150,7 @@ export class ImageAttachmentStore {
     mutable.height = input.height;
     mutable.original = input.original;
     mutable.fileId = input.fileId;
+    mutable.fileExpiresAt = input.fileExpiresAt;
     mutable.placeholder = formatPlaceholder(attachment.id, input.width, input.height);
     return attachment;
   }
@@ -210,6 +216,7 @@ export class ImageAttachmentStore {
       this.stagingUses.delete(id);
       fileIds.push(attachment.fileId);
       attachment.fileId = undefined;
+      attachment.fileExpiresAt = undefined;
     }
     return fileIds;
   }

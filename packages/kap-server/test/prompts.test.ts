@@ -363,7 +363,7 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(content[0]).toEqual({ type: 'text', text: 'what happens in this video?' });
     expect(content[1]).toEqual({
       type: 'video',
-      source: { kind: 'file', file_id: uploaded.data.id },
+      source: { kind: 'session_media', file_id: uploaded.data.id },
     });
 
     // The `?path=` of that reference points at a materialized copy of the bytes
@@ -403,7 +403,7 @@ describe('server-v2 /api/v1 prompts', () => {
     // client's original upload id.
     const image = content[1] as { type: string; source: { kind: string; file_id: string } };
     expect(image.type).toBe('image');
-    expect(image.source.kind).toBe('file');
+    expect(image.source.kind).toBe('session_media');
     const finalFileId = image.source.file_id;
     expect(finalFileId).not.toBe(uploaded.id);
 
@@ -419,12 +419,14 @@ describe('server-v2 /api/v1 prompts', () => {
     const original = await server!.core.accessor.get(IFileService).get(uploaded.id);
     expect(original.meta.size).toBe(bigPng.length);
 
-    // The compressed re-save stays retrievable: read models project this id
-    // (submit response, prompt list, transcript), so it must keep serving the
-    // final bytes like any client upload — deleting it after intake would
-    // leave every projected `{kind:'file'}` reference dangling.
-    const final = await server!.core.accessor.get(IFileService).get(finalFileId);
-    expect(final.meta.size).toBe((await readFileEventually(mediaPath)).length);
+    // The compressed re-save is only staging. Once prompt intake has created
+    // the Session-owned copy, the App upload is released; stored projections
+    // address the canonical copy through `session_media` instead.
+    const files = server!.core.accessor.get(IFileService);
+    await vi.waitFor(async () => {
+      const result = await files.get(finalFileId).catch((error: unknown) => error);
+      expect(result).toMatchObject({ code: 'file.not_found' });
+    });
 
     // The internal reference never leaks to the wire.
     expect(JSON.stringify(content)).not.toContain('kimi-file://');
@@ -500,7 +502,7 @@ describe('server-v2 /api/v1 prompts', () => {
     // wire, so the media path never leaks to the client.
     const content = submitted.body.data.content as Array<Record<string, unknown>>;
     expect(content).toEqual([
-      { type: 'image', source: { kind: 'file', file_id: uploaded.id } },
+      { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },
     ]);
 
     // The session-media copy holds the original bytes, named by the original upload id.
@@ -509,6 +511,31 @@ describe('server-v2 /api/v1 prompts', () => {
 
     // The internal reference never leaks to the wire.
     expect(JSON.stringify(content)).not.toContain('kimi-file://');
+  });
+
+  it('accepts a stored session-media reference after the transient upload is deleted', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const smallPng = solidPng(10, 10);
+    const uploaded = await uploadFile(smallPng, 'image/png', 'small.png');
+
+    const first = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
+    });
+    expect(first.body.code).toBe(0);
+    await expectSessionMedia(server!, id, `${uploaded.id}.png`, smallPng);
+    await server!.core.accessor.get(IFileService).delete(uploaded.id);
+
+    const replayed = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [
+        { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },
+      ],
+    });
+
+    expect(replayed.body.code).toBe(0);
+    expect(replayed.body.data.content).toEqual([
+      { type: 'image', source: { kind: 'session_media', file_id: uploaded.id } },
+    ]);
   });
 
   it('falls back to the shared cache dir when the session media dir is not writable', async () => {

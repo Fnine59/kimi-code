@@ -59,6 +59,7 @@ describe('Agent loop', () => {
 
     expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
       [wire] tools.set_active_tools      { "names": [], "time": "<time>" }
+      [wire] prompt.accepted             { "promptId": "<msg-1>", "time": "<time>" }
       [wire] turn.prompt                 { "input": [ { "type": "text", "text": "Hello" } ], "origin": { "kind": "user" }, "time": "<time>" }
       [emit] turn.started                { "turnId": 0, "origin": { "kind": "user" }, "prompt": "Hello", "promptId": "<msg-1>" }
       [emit] agent.activity.updated      { "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 0, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
@@ -114,6 +115,7 @@ describe('Agent loop', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
 
     expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
+      [wire] prompt.accepted             { "promptId": "<msg-1>", "time": "<time>" }
       [wire] turn.prompt                 { "input": [ { "type": "text", "text": "Hello" } ], "origin": { "kind": "user" }, "time": "<time>" }
       [emit] turn.started                { "turnId": 0, "origin": { "kind": "user" }, "prompt": "Hello", "promptId": "<msg-1>" }
       [emit] agent.activity.updated      { "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 0, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
@@ -334,6 +336,7 @@ describe('Agent loop', () => {
     ctx.mockNextResponse({ type: 'text', text: 'The lookup result is lookup-result.' });
     expect(await ctx.untilApproval(true)).toMatchInlineSnapshot(`
       [wire] tools.set_active_tools          { "names": [ "Lookup" ], "time": "<time>" }
+      [wire] prompt.accepted                 { "promptId": "<msg-1>", "time": "<time>" }
       [wire] turn.prompt                     { "input": [ { "type": "text", "text": "Look up moon" } ], "origin": { "kind": "user" }, "time": "<time>" }
       [emit] turn.started                    { "turnId": 0, "origin": { "kind": "user" }, "prompt": "Look up moon", "promptId": "<msg-1>" }
       [emit] agent.activity.updated          { "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 0, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }

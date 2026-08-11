@@ -17,6 +17,7 @@ import {
   IAuthSummaryService,
   IEventService,
   IFileService,
+  ISessionMediaStore,
   ISessionMetadata,
   promptMetadataTextFromContentParts,
   ProfileError,
@@ -52,6 +53,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import {
   assertPromptFileRefs,
+  assertPromptSessionMediaRefs,
   contentToCoreParts,
   resolvePromptMediaFiles,
   type PromptMediaPreparation,
@@ -220,7 +222,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         // mutated: a bad `file_id` must not create the agent, register `main`
         // in session metadata, or touch the session's controls.
         await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));
-        const resolved = await resolvePrompt(core, session_id, req.body.agent_id);
+        const session = await resolveSession(core, session_id);
+        await assertPromptSessionMediaRefs(
+          req.body.content,
+          session.accessor.get(ISessionMediaStore),
+        );
+        const resolved = await resolvePromptFromSession(session, req.body.agent_id);
         reservation = reservePrompt(resolved.prompt, req.body.prompt_id);
         await resolved.auth.ensureReady();
 
@@ -280,7 +287,6 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           }
         }
         const parts = contentToCoreParts(resolvedContent);
-        const session = await resolveSession(core, session_id);
         await applyPromptMetadataUpdate({
           metadata: session.accessor.get(ISessionMetadata),
           eventService: core.accessor.get(IEventService),
@@ -293,12 +299,17 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           origin: { kind: 'user' },
         });
         enqueued = true;
+        const staging = preparedMedia;
+        void Promise.race([handle.launched, handle.completion]).then(
+          () => staging?.discard(),
+          () => staging?.discard(),
+        );
         reply.send(okEnvelope(projectPromptHandle(handle), req.id));
       } catch (error) {
         // A submission that failed before the engine took the prompt projected
-        // no upload ids to the client — roll back the uploads the preparation
-        // created. After a successful enqueue the compressed re-save must stay
-        // retrievable: read models project its id.
+        // no Session media to the client — roll back the uploads the
+        // preparation created. A successful enqueue releases them when the
+        // prompt launches (intake complete) or settles without launching.
         if (!enqueued) await preparedMedia?.discard();
         sendMappedError(reply, req, error);
       } finally {

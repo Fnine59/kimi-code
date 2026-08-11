@@ -1602,7 +1602,7 @@ describe('AgentTranscriptProjector', () => {
     const prompt = tx.getPrompt('p1');
     expect(prompt?.content).toEqual([
       { type: 'text', text: 'look at this' },
-      { type: 'image', source: { kind: 'file', file_id: 'f_img1' } },
+      { type: 'image', source: { kind: 'session_media', file_id: 'f_img1' } },
     ]);
   });
 

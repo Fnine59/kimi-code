@@ -32,6 +32,7 @@ import {
   compressImageForModel,
   decodeBase64Prefix,
   Error2,
+  fileNotFoundError,
   isModelAcceptedImageMime,
   normalizeImageMime,
   persistOriginalImage,
@@ -40,6 +41,7 @@ import {
   type ContentPart,
   type GetResult,
   type IFileService,
+  type ISessionMediaStore,
   type ImageCompressionTelemetry,
   type ITelemetryService,
 } from '@moonshot-ai/agent-core-v2';
@@ -71,14 +73,31 @@ export async function assertPromptFileRefs(content: WireContent, store: IFileSer
   }
 }
 
+export async function assertPromptSessionMediaRefs(
+  content: WireContent,
+  store: ISessionMediaStore,
+): Promise<void> {
+  for (const part of content) {
+    if (
+      (part.type === 'image' || part.type === 'video') &&
+      part.source.kind === 'session_media' &&
+      (await store.open(part.source.file_id)) === undefined
+    ) {
+      throw fileNotFoundError(part.source.file_id);
+    }
+  }
+}
+
 export function contentToCoreParts(content: WireContent): ContentPart[] {
   const parts: ContentPart[] = [];
   for (const part of content) {
     if (part.type === 'text') parts.push({ type: 'text', text: part.text });
     else if (part.type === 'image' && part.source.kind === 'url') parts.push({ type: 'image_url', imageUrl: { url: part.source.url, id: part.source.id } });
     else if (part.type === 'image' && part.source.kind === 'base64') parts.push({ type: 'image_url', imageUrl: { url: `data:${part.source.media_type};base64,${part.source.data}` } });
+    else if (part.type === 'image' && part.source.kind === 'session_media') parts.push({ type: 'image_url', imageUrl: { url: buildDaemonFileUrl(part.source.file_id) } });
     else if (part.type === 'video' && part.source.kind === 'url') parts.push({ type: 'video_url', videoUrl: { url: part.source.url, id: part.source.id } });
     else if (part.type === 'video' && part.source.kind === 'base64') parts.push({ type: 'video_url', videoUrl: { url: `data:${part.source.media_type};base64,${part.source.data}` } });
+    else if (part.type === 'video' && part.source.kind === 'session_media') parts.push({ type: 'video_url', videoUrl: { url: buildDaemonFileUrl(part.source.file_id) } });
   }
   return parts;
 }
@@ -105,10 +124,9 @@ export interface ResolvePromptMediaOptions {
 export interface PromptMediaPreparation {
   readonly content: WireContent;
   /**
-   * Delete the daemon uploads this preparation created (the compressed
-   * re-save). Failure rollback only: once a submission reaches the engine,
-   * client read models project these upload ids, so they must stay
-   * retrievable like any client upload.
+   * Delete the transient daemon uploads this preparation created (the
+   * compressed re-save). Call on failure, or after the engine has either
+   * materialized the Session-owned copy or terminally rejected the prompt.
    */
   readonly discard: () => Promise<void>;
 }
@@ -116,8 +134,10 @@ export interface PromptMediaPreparation {
 /**
  * Resolve a wire content list's media/file references into their final wire
  * form: uploaded files materialize to a session-local path notice, images are
- * format-gated and compressed, images and videos materialize to `kimi-file://`
- * references. Returns the input array unchanged when nothing needed resolving.
+ * format-gated and compressed, and image/video uploads enter context as bare
+ * internal `kimi-file://` references. The preparation's `content` is the
+ * input array unchanged when nothing needed resolving; `discard` rolls back
+ * or releases the daemon uploads the preparation created after intake.
  */
 export async function resolvePromptMediaFiles(
   input: WireContent,
@@ -327,9 +347,9 @@ export async function resolvePromptMediaFiles(
         // `<image path>` tag, then resolves the reference at request time.
         // When compression changed the bytes, the reference addresses a NEW
         // daemon upload holding the final bytes — the client's original
-        // upload stays untouched. The re-save is an ordinary upload (no
-        // expiry): read models project its id, so it must keep serving bytes
-        // for the session's history.
+        // upload stays untouched. The re-save is staging only: read models
+        // project the Session-owned copy, and the route releases this upload
+        // after intake or terminal rejection.
         let finalFile = file;
         if (compressed.changed) {
           const saved = await store.save(
@@ -337,9 +357,9 @@ export async function resolvePromptMediaFiles(
             compressedUploadName(file.meta.name, compressed.mimeType),
             { mimeType: compressed.mimeType },
           );
-          // Owned until the body reaches the engine: a preparation failure
-          // rolls the re-save back (the outer catch), a successful submission
-          // keeps it alive.
+          // Owned until the content reaches the engine: a preparation failure
+          // rolls the re-save back; successful submission releases it once
+          // intake has materialized the Session-owned copy.
           ownedFileIds.add(saved.id);
           finalFile = await store.get(saved.id);
         }

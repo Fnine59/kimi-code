@@ -154,7 +154,11 @@ import { isDeadTerminalError } from './utils/dead-terminal';
 import { formatErrorMessage } from './utils/event-payload';
 import { pickForegroundTasks } from './utils/foreground-task';
 import { ImageAttachmentStore, type ImageAttachment } from './utils/image-attachment-store';
-import { extractMediaAttachments, rewriteMediaPlaceholders } from './utils/image-placeholder';
+import {
+  extractMediaAttachments,
+  refreshExpiringImageFileRefs,
+  rewriteMediaPlaceholders,
+} from './utils/image-placeholder';
 import type { ExtractionResult } from './utils/image-placeholder';
 import { installInputLatencyProbe } from './utils/input-latency';
 import { combineSteerInput } from './utils/steer-input';
@@ -1315,6 +1319,14 @@ export class KimiTUI {
       // in: the image store may already be cleared (e.g. after "Start a new
       // session"), so re-extracting from the text would lose the media.
       extraction = preExtracted ?? extractMediaAttachments(text, this.imageStore);
+      if (preExtracted !== undefined) {
+        const parts = refreshExpiringImageFileRefs(
+          extraction.parts,
+          extraction.imageAttachmentIds,
+          this.imageStore,
+        );
+        if (parts !== extraction.parts) extraction = { ...extraction, parts };
+      }
     } catch (error) {
       // A video cache copy failed (unwritable cache dir, vanished source…);
       // nothing was dispatched.
@@ -1478,9 +1490,17 @@ export class KimiTUI {
       void this.runShellCommandFromInput(item.text);
       return;
     }
+    const parts =
+      item.parts === undefined
+        ? undefined
+        : refreshExpiringImageFileRefs(
+            item.parts,
+            item.imageAttachmentIds ?? [],
+            this.imageStore,
+          );
     this.harness.withInteractiveAgent(item.agentId ?? MAIN_AGENT_ID, () => {
       this.sendMessageInternal(session, item.text, {
-        parts: item.parts,
+        parts,
         imageAttachmentIds: item.imageAttachmentIds,
         stagingPaths: item.stagingPaths,
       });

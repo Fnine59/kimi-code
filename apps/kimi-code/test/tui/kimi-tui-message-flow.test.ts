@@ -2617,6 +2617,33 @@ command = "vim"
     });
   });
 
+  it('falls back to retained bytes when a queued image upload expires before dispatch', async () => {
+    const session = makeSession();
+    const { driver } = await makeDriver(session);
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const attachment = imageStore.addImage(
+      new Uint8Array([0xaa, 0xbb]),
+      'image/png',
+      1,
+      1,
+      undefined,
+      'file-expired',
+      1,
+    );
+
+    driver.sendQueuedMessage(session, {
+      text: `describe ${attachment.placeholder}`,
+      parts: [
+        { type: 'image_url', imageUrl: { url: 'kimi-file://file-expired' } },
+      ],
+      imageAttachmentIds: [attachment.id],
+    });
+
+    expect(session.prompt).toHaveBeenCalledWith(
+      [{ type: 'image_url', imageUrl: { url: 'data:image/png;base64,qrs=' } }],
+      { promptId: expect.any(String) },
+    );
+  });
 
   it('sends pasted image placeholders as image content parts', async () => {
     const { driver, session } = await makeDriver();

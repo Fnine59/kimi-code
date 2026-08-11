@@ -56,7 +56,7 @@ describe('toProtocolMessage', () => {
 
     expect(toProtocolMessage(SESSION_ID, 0, msg, CREATED_AT).content).toEqual([
       { type: 'text', text: 'what is this?' },
-      { type: 'image', source: { kind: 'file', file_id: 'file_9' } },
+      { type: 'image', source: { kind: 'session_media', file_id: 'file_9' } },
     ]);
   });
 
@@ -101,7 +101,7 @@ describe('toProtocolMessage', () => {
     };
 
     expect(toProtocolMessage(SESSION_ID, 0, msg, CREATED_AT).content).toEqual([
-      { type: 'video', source: { kind: 'file', file_id: 'file_9' } },
+      { type: 'video', source: { kind: 'session_media', file_id: 'file_9' } },
     ]);
   });
 

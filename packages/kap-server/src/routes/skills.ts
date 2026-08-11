@@ -88,6 +88,7 @@ import {
   IPluginService,
   ISessionContext,
   ISessionIndex,
+  ISessionMediaStore,
   ISessionSkillCatalog,
   ISkillDiscovery,
   ITelemetryService,
@@ -115,6 +116,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import {
   assertPromptFileRefs,
+  assertPromptSessionMediaRefs,
   contentToCoreParts,
   resolvePromptMediaFiles,
   type PromptMediaPreparation,
@@ -330,6 +332,10 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
             );
           }
           await assertPromptFileRefs(attachments, core.accessor.get(IFileService));
+          await assertPromptSessionMediaRefs(
+            attachments,
+            resolved.handle.accessor.get(ISessionMediaStore),
+          );
           const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
           const sessionDir = resolved.handle.accessor.get(ISessionContext).sessionDir;
           preparedMedia = await resolvePromptMediaFiles(
@@ -351,6 +357,10 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         await agent.accessor
           .get(IAgentSkillService)
           .activate({ name: parsed.id, args: req.body.args, content: attachmentParts });
+        // Intake materialized the session-owned copies — release the
+        // preparation's uploads, and keep them released on the success path.
+        await preparedMedia?.discard();
+        preparedMedia = undefined;
         requestLog(req)?.info({ session_id, skill_name: parsed.id }, 'skill activated');
         reply.send(okEnvelope({ activated: true, skill_name: parsed.id }, req.id));
       } catch (err) {
