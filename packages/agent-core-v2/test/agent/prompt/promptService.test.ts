@@ -654,7 +654,9 @@ describe('AgentPromptService daemon media intake', () => {
 
     const steerPromise = prompt.steer([queued.id]);
     void steerPromise.catch(() => undefined);
-    await vi.waitFor(() => expect(steerRequest).toBeDefined());
+    await vi.waitFor(() => {
+      expect(steerRequest).toBeDefined();
+    });
 
     // The abort settles the prompt as cancelled inside the assignment window;
     // the steer must not flip it back to 'steered', and the undispatched

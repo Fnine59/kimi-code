@@ -596,7 +596,7 @@ export class EditorKeyboardController {
     bytes: Uint8Array,
     mime: string,
   ): Promise<string | undefined> {
-    if (this.host.engineV2 !== true) return undefined;
+    if (!this.host.engineV2) return undefined;
     const harness = this.host.harness;
     if (harness === undefined) return undefined;
     try {

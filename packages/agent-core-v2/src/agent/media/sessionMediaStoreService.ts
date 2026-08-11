@@ -81,8 +81,7 @@ export class SessionMediaStoreService implements ISessionMediaStore {
     const ext =
       (input.hintPath === undefined ? '' : extname(input.hintPath)) ||
       extname(input.name) ||
-      mediaExtensionForMime(input.mimeType) ||
-      '.bin';
+      (mediaExtensionForMime(input.mimeType) ?? '.bin');
     const key = this.keyFor(input.fileId, ext);
     const existingSize = await this.storage.size(scope, key);
     if (existingSize !== input.size) {

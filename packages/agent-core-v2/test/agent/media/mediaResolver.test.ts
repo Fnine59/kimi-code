@@ -179,7 +179,9 @@ beforeEach(() => {
   disposables = new DisposableStore();
 });
 
-afterEach(() => disposables.dispose());
+afterEach(() => {
+  disposables.dispose();
+});
 
 function resolver(
   files: Map<string, { name: string; bytes: Buffer }>,
@@ -748,7 +750,9 @@ describe('AgentMediaResolverService scoped registration', () => {
     );
   });
 
-  afterEach(() => host.dispose());
+  afterEach(() => {
+    host.dispose();
+  });
 
   function agentScope(files: Map<string, { name: string; bytes: Buffer }>) {
     host = createScopedTestHost([

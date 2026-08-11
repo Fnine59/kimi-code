@@ -807,8 +807,8 @@ describe('SessionEventBroadcaster', () => {
     const live = envelopes.find((e) => e.type === 'turn.started');
     expect(live).toBeDefined();
     expect(live!.payload).toHaveProperty('promptId', 'submission-1');
-    expect(Object.keys(live!.payload as Record<string, unknown>).sort()).toEqual(
-      [...TURN_STARTED_WIRE_KEYS, 'promptId'].sort(),
+    expect(Object.keys(live!.payload as Record<string, unknown>).toSorted()).toEqual(
+      [...TURN_STARTED_WIRE_KEYS, 'promptId'].toSorted(),
     );
   });
 
@@ -834,7 +834,7 @@ describe('SessionEventBroadcaster', () => {
     );
     expect(live).toBeDefined();
     expect(live!.payload).not.toHaveProperty('promptAttachments');
-    expect(Object.keys(live!.payload as Record<string, unknown>).sort()).toEqual(
+    expect(Object.keys(live!.payload as Record<string, unknown>).toSorted()).toEqual(
       TURN_STARTED_WIRE_KEYS,
     );
 
@@ -857,7 +857,7 @@ describe('SessionEventBroadcaster', () => {
     );
     expect(replayed).toBeDefined();
     expect(replayed!.envelope.payload).not.toHaveProperty('promptAttachments');
-    expect(Object.keys(replayed!.envelope.payload as Record<string, unknown>).sort()).toEqual(
+    expect(Object.keys(replayed!.envelope.payload as Record<string, unknown>).toSorted()).toEqual(
       TURN_STARTED_WIRE_KEYS,
     );
   });

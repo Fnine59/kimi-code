@@ -117,7 +117,7 @@ const AUDIO_EXT_BY_MIME = invertMimeBySuffix(AUDIO_MIME_BY_SUFFIX);
 function invertMimeBySuffix(table: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const [suffix, mime] of Object.entries(table)) {
-    if (out[mime] === undefined) out[mime] = suffix;
+    out[mime] ??= suffix;
   }
   return Object.freeze(out);
 }
