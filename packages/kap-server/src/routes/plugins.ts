@@ -139,6 +139,12 @@ const rawMarketplaceEntrySchema = z.preprocess(
       if (kept.length > 0) normalized['keywords'] = kept;
       else delete normalized['keywords'];
     }
+    // Version: blank or non-string reads as missing (derivation from the
+    // source then kicks in downstream) — the raw trimmed string is kept
+    // as-is otherwise (strictness lives in the update check, not here).
+    const version = pick(record['version']);
+    if (version === undefined) delete normalized['version'];
+    else normalized['version'] = version;
     const source = pick(record['source']) ?? pick(record['url']) ?? pick(record['downloadUrl']);
     // A source with no valid value or alias must fail validation (not slip
     // through as whitespace): drop the key so the schema reports it missing.

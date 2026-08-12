@@ -71,9 +71,11 @@ const CATALOG = {
       source: 'https://example.test/bt.zip',
     },
     {
-      // No version field; the GitHub release-tag source encodes it.
+      // A non-string version reads as missing, so the GitHub release-tag
+      // source supplies it.
       id: 'gh-plugin',
       displayName: 'GH Plugin',
+      version: 2,
       source: 'https://github.com/example/gh/releases/tag/v2.0.0',
     },
     {
