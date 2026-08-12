@@ -54,6 +54,12 @@ const CATALOG = {
       displayName: 'Relative',
       source: './plugins/relative.zip',
     },
+    {
+      // Legacy `url` alias (accepted by the CLI parser).
+      id: 'alias-plugin',
+      displayName: 'Alias',
+      url: './plugins/alias.zip',
+    },
   ],
 };
 
@@ -189,11 +195,15 @@ describe('server-v2 /api/v1 plugins', () => {
       ['demo-plugin', 'official'],
       ['third-party-plugin', 'third-party'],
       ['relative-plugin', 'third-party'],
+      ['alias-plugin', 'third-party'],
     ]);
     expect(before.body.data.entries[0]?.installed).toBeUndefined();
     // Catalog-relative sources resolve against the catalog URL.
     const relative = before.body.data.entries.find((e) => e.id === 'relative-plugin');
     expect(relative?.source).toBe('http://marketplace.test/plugins/relative.zip');
+    // The legacy `url` alias is accepted and resolved the same way.
+    const alias = before.body.data.entries.find((e) => e.id === 'alias-plugin');
+    expect(alias?.source).toBe('http://marketplace.test/plugins/alias.zip');
 
     // Install an older version than the catalog → updateAvailable.
     const source = await makePluginDir('demo-plugin', '1.0.0');

@@ -72,19 +72,31 @@ const PLUGIN_ACTIONS = ['enable', 'disable', 'remove'] as const;
 
 const MARKETPLACE_FETCH_TIMEOUT_MS = 10_000;
 
+// Custom catalogs accepted by the CLI may carry the source under the legacy
+// `url` / `downloadUrl` aliases — normalize before validating so a catalog
+// that works in the CLI works here too.
+const rawMarketplaceEntrySchema = z.preprocess(
+  (value) => {
+    if (typeof value !== 'object' || value === null) return value;
+    const record = value as Record<string, unknown>;
+    if (record['source'] !== undefined) return value;
+    const alias = record['url'] ?? record['downloadUrl'];
+    return typeof alias === 'string' ? { ...record, source: alias } : value;
+  },
+  z.object({
+    id: z.string().min(1),
+    tier: z.enum(['official', 'curated']).optional(),
+    displayName: z.string().optional(),
+    description: z.string().optional(),
+    homepage: z.string().optional(),
+    keywords: z.array(z.string()).optional(),
+    version: z.string().optional(),
+    source: z.string().min(1),
+  }),
+);
+
 const rawMarketplaceSchema = z.object({
-  plugins: z.array(
-    z.object({
-      id: z.string().min(1),
-      tier: z.enum(['official', 'curated']).optional(),
-      displayName: z.string().optional(),
-      description: z.string().optional(),
-      homepage: z.string().optional(),
-      keywords: z.array(z.string()).optional(),
-      version: z.string().optional(),
-      source: z.string().min(1),
-    }),
-  ),
+  plugins: z.array(rawMarketplaceEntrySchema),
 });
 
 /** Strict `x.y.z` numeric comparison (no prerelease); avoids a semver dep. */
