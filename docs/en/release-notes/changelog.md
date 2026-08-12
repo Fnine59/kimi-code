@@ -17,7 +17,7 @@ This page documents the changes in each Kimi Code CLI release.
 
 - Fix coder subagents spawning further subagents by default.
 - Fix the token counts reported after compaction reading far below the real context size; they now match the numbers shown while the session runs.
-- Fix two binary-planting risks on Windows.
+- Fix two binary-planting risks on Windows. Thanks [@Leakless](https://github.com/Leakless) and [@winmin](https://github.com/winmin) for reporting them.
 - Fix several known issues and make various refinements. See the [changelog on GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md) for more technical entries.
 
 ## 0.34.0 (2026-08-06)

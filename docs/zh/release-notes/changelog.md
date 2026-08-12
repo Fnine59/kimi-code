@@ -17,7 +17,7 @@ outline: 2
 
 - 修复 coder 子 Agent 默认可继续派生子 Agent 的问题。
 - 修复压缩后 token 数显示偏低的问题，现在与会话中看到的数字一致。
-- 修复 Windows 上的两处二进制植入风险。
+- 修复 Windows 上的两处二进制植入风险。感谢 [@Leakless](https://github.com/Leakless) 与 [@winmin](https://github.com/winmin) 报告这些问题。
 - 修复了一些已知问题，并做了若干细节优化。更详细的变更记录见 [GitHub](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/CHANGELOG.md)。
 
 ## 0.34.0（2026-08-06）
