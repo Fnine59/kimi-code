@@ -100,10 +100,19 @@ export interface ServerHostIdentity extends KimiHostIdentity {
   readonly replyStyleGuide?: string;
 }
 
+/** Default plugin marketplace catalog (overridable per server option or env). */
+const DEFAULT_PLUGIN_MARKETPLACE_URL = 'https://code.kimi.com/kimi-code/plugins/marketplace.json';
+
 export interface ServerStartOptions {
   readonly host?: string;
   readonly port?: number;
   readonly homeDir?: string;
+  /**
+   * Plugin marketplace catalog URL for `GET /api/v1/plugins/marketplace`.
+   * Defaults to the `KIMI_CODE_PLUGIN_MARKETPLACE_URL` env var, then the
+   * production catalog.
+   */
+  readonly pluginMarketplaceUrl?: string;
   readonly configPath?: string;
   /**
    * Override the instance-registry directory — used in tests that need the
@@ -504,6 +513,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableShutdown,
     enableTerminals,
     guiStore,
+    pluginMarketplaceUrl:
+      opts.pluginMarketplaceUrl ??
+      process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] ??
+      DEFAULT_PLUGIN_MARKETPLACE_URL,
     onShutdown: () => {
       void close().catch((err: unknown) => logger.error({ err }, 'server close failed'));
     },
