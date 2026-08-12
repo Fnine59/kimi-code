@@ -192,6 +192,51 @@ function deriveVersionFromGithubSource(source: string): string | undefined {
 }
 
 /**
+ * Bare-repo GitHub sources carry no version — resolve the latest release tag
+ * through the `/releases/latest` redirect (a UI route, not the rate-limited
+ * API), same as the CLI. Lookups never fail the listing: any error degrades
+ * to no version.
+ */
+async function resolveLatestGithubRelease(
+  source: string,
+  fetchImpl: typeof fetch,
+): Promise<string | undefined> {
+  let url: URL;
+  try {
+    url = new URL(source);
+  } catch {
+    return undefined;
+  }
+  if (url.hostname !== 'github.com' && url.hostname !== 'www.github.com') return undefined;
+  // Only bare repo URLs (/<owner>/<repo>) qualify — ref tails are already
+  // handled by deriveVersionFromGithubSource.
+  const segments = url.pathname.split('/').filter(Boolean);
+  if (segments.length !== 2) return undefined;
+  const [owner, repo] = segments;
+  try {
+    const resp = await fetchImpl(`https://github.com/${owner}/${repo}/releases/latest`, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(MARKETPLACE_FETCH_TIMEOUT_MS),
+    });
+    if (resp.status !== 301 && resp.status !== 302) return undefined;
+    const location = resp.headers.get('location');
+    if (location === null) return undefined;
+    const tag = /\/releases\/tag\/([^/?#]+)/.exec(location)?.[1];
+    if (tag === undefined) return undefined;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(tag);
+    } catch {
+      decoded = tag;
+    }
+    const candidate = decoded.replace(/^v/i, '');
+    return /^(\d+)\.(\d+)\.(\d+)$/.test(candidate) ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Local catalog location → filesystem path: `file://` conversion plus home
  * expansion.
  */
@@ -261,18 +306,29 @@ export function registerPluginsRoutes(
         );
         return;
       }
+      const fetchImpl = opts.fetchImpl ?? fetch;
+      // Resolve sources and versions up front (parallel; latest-release
+      // lookups for bare GitHub repos ride the shared per-call timeout).
+      const resolved = await Promise.all(
+        parsed.data.plugins.map(async (entry) => {
+          const source = resolveEntrySource(entry.source, opts.marketplaceUrl);
+          // Entries may omit `version`: derive it from a GitHub ref tail, or
+          // look up the latest release of a bare repo source (CLI parity).
+          const version =
+            entry.version ??
+            deriveVersionFromGithubSource(source) ??
+            (await resolveLatestGithubRelease(source, fetchImpl));
+          return { entry, source, version };
+        }),
+      );
       const installed = await core.accessor.get(IPluginService).listPlugins();
       const byId = new Map(installed.map((p) => [p.id, p]));
-      const entries: PluginMarketplaceEntryWire[] = parsed.data.plugins.map((entry) => {
+      const entries: PluginMarketplaceEntryWire[] = resolved.map(({ entry, source, version }) => {
         const record = byId.get(entry.id);
         const installedInfo =
           record === undefined
             ? undefined
             : { enabled: record.enabled, version: record.version };
-        const source = resolveEntrySource(entry.source, opts.marketplaceUrl);
-        // Entries may omit `version` and encode it in a GitHub release/tag
-        // source — derive it so update checks still fire (CLI parity).
-        const version = entry.version ?? deriveVersionFromGithubSource(source);
         const updateAvailable =
           version !== undefined &&
           record?.version !== undefined &&

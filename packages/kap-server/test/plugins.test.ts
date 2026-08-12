@@ -94,6 +94,16 @@ describe('server-v2 /api/v1 plugins', () => {
         if (url === CATALOG_URL) {
           return new Response(JSON.stringify(CATALOG), { status: 200 });
         }
+        // Latest-release lookups for bare GitHub repo sources.
+        if (url === 'https://github.com/example/third/releases/latest') {
+          return new Response(null, {
+            status: 302,
+            headers: { location: 'https://github.com/example/third/releases/tag/v3.1.0' },
+          });
+        }
+        if (typeof url === 'string' && url.includes('/releases/latest')) {
+          return new Response(null, { status: 404 });
+        }
         return realFetch(url as never, init);
       }),
     );
@@ -231,6 +241,11 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(alias?.source).toBe('http://marketplace.test/plugins/alias.zip');
     // Version derived from the GitHub release-tag source.
     expect(before.body.data.entries.find((e) => e.id === 'gh-plugin')?.version).toBe('2.0.0');
+    // Bare GitHub repo source: latest release tag resolved through the
+    // /releases/latest redirect.
+    expect(before.body.data.entries.find((e) => e.id === 'third-party-plugin')?.version).toBe(
+      '3.1.0',
+    );
 
     // Install an older version than the catalog → updateAvailable.
     const source = await makePluginDir('demo-plugin', '1.0.0');
