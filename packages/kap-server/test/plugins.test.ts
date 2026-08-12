@@ -117,7 +117,7 @@ describe('server-v2 /api/v1 plugins', () => {
       method,
       headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
       // A JSON content-type with an empty body is rejected by Fastify.
-      ...(method === 'POST' ? { body: JSON.stringify(body ?? {}) } : {}),
+      body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
     } as never);
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
