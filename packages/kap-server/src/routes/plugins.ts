@@ -163,6 +163,32 @@ function expandHome(input: string): string {
 }
 
 /**
+ * Derive a version from a GitHub release/tree/commit source (same shapes as
+ * the CLI parser; strict `x.y.z`, no prerelease — mirrors `semverGt`).
+ */
+function deriveVersionFromGithubSource(source: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(source);
+  } catch {
+    return undefined;
+  }
+  if (url.hostname !== 'github.com' && url.hostname !== 'www.github.com') return undefined;
+  const [, , kind, a, b] = url.pathname.split('/').filter(Boolean);
+  const ref =
+    kind === 'releases' && a === 'tag' ? b : kind === 'tree' || kind === 'commit' ? a : undefined;
+  if (ref === undefined) return undefined;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(ref);
+  } catch {
+    decoded = ref;
+  }
+  const candidate = decoded.replace(/^v/i, '');
+  return /^(\d+)\.(\d+)\.(\d+)$/.test(candidate) ? candidate : undefined;
+}
+
+/**
  * Local catalog location → filesystem path: `file://` conversion plus home
  * expansion.
  */
@@ -240,10 +266,14 @@ export function registerPluginsRoutes(
           record === undefined
             ? undefined
             : { enabled: record.enabled, version: record.version };
+        const source = resolveEntrySource(entry.source, opts.marketplaceUrl);
+        // Entries may omit `version` and encode it in a GitHub release/tag
+        // source — derive it so update checks still fire (CLI parity).
+        const version = entry.version ?? deriveVersionFromGithubSource(source);
         const updateAvailable =
-          entry.version !== undefined &&
+          version !== undefined &&
           record?.version !== undefined &&
-          semverGt(entry.version, record.version);
+          semverGt(version, record.version);
         return {
           id: entry.id,
           tier: entry.tier ?? 'third-party',
@@ -251,8 +281,8 @@ export function registerPluginsRoutes(
           description: entry.description,
           homepage: entry.homepage,
           keywords: entry.keywords,
-          version: entry.version,
-          source: resolveEntrySource(entry.source, opts.marketplaceUrl),
+          version,
+          source,
           installed: installedInfo,
           updateAvailable: updateAvailable ? true : undefined,
         };

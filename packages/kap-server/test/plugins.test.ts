@@ -70,6 +70,12 @@ const CATALOG = {
       tier: '  ',
       source: 'https://example.test/bt.zip',
     },
+    {
+      // No version field; the GitHub release-tag source encodes it.
+      id: 'gh-plugin',
+      displayName: 'GH Plugin',
+      source: 'https://github.com/example/gh/releases/tag/v2.0.0',
+    },
   ],
 };
 
@@ -199,7 +205,13 @@ describe('server-v2 /api/v1 plugins', () => {
 
   it('serves the marketplace catalog merged with live install state', async () => {
     const before = await call<{
-      entries: { id: string; tier: string; source: string; installed?: { version?: string } }[];
+      entries: {
+        id: string;
+        tier: string;
+        source: string;
+        version?: string;
+        installed?: { version?: string };
+      }[];
     }>('GET', '/api/v1/plugins/marketplace');
     expect(before.body.code).toBe(0);
     expect(before.body.data.entries.map((e) => [e.id, e.tier])).toEqual([
@@ -208,6 +220,7 @@ describe('server-v2 /api/v1 plugins', () => {
       ['relative-plugin', 'third-party'],
       ['alias-plugin', 'third-party'],
       ['blank-tier-plugin', 'third-party'],
+      ['gh-plugin', 'third-party'],
     ]);
     expect(before.body.data.entries[0]?.installed).toBeUndefined();
     // Catalog-relative sources resolve against the catalog URL.
@@ -216,6 +229,8 @@ describe('server-v2 /api/v1 plugins', () => {
     // The legacy `url` alias is accepted and resolved the same way.
     const alias = before.body.data.entries.find((e) => e.id === 'alias-plugin');
     expect(alias?.source).toBe('http://marketplace.test/plugins/alias.zip');
+    // Version derived from the GitHub release-tag source.
+    expect(before.body.data.entries.find((e) => e.id === 'gh-plugin')?.version).toBe('2.0.0');
 
     // Install an older version than the catalog → updateAvailable.
     const source = await makePluginDir('demo-plugin', '1.0.0');
@@ -231,6 +246,14 @@ describe('server-v2 /api/v1 plugins', () => {
     const demo = after.body.data.entries.find((e) => e.id === 'demo-plugin');
     expect(demo?.installed).toEqual({ version: '1.0.0', enabled: true });
     expect(demo?.updateAvailable).toBe(true);
+
+    // A version derived from the GitHub tag source drives updateAvailable too.
+    const ghSource = await makePluginDir('gh-plugin', '1.5.0');
+    await call('POST', '/api/v1/plugins', { source: ghSource });
+    const afterGh = await call<{
+      entries: { id: string; updateAvailable?: boolean }[];
+    }>('GET', '/api/v1/plugins/marketplace');
+    expect(afterGh.body.data.entries.find((e) => e.id === 'gh-plugin')?.updateAvailable).toBe(true);
   });
 
   it('maps an unreachable marketplace to 50001', async () => {
