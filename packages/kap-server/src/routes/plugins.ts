@@ -106,6 +106,11 @@ const rawMarketplaceEntrySchema = z.preprocess(
     const pick = (v: unknown) =>
       typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
     const normalized: Record<string, unknown> = { ...record };
+    // The id keys the install-state join — trim it like the CLI's
+    // requiredString; a blank id drops out so the schema rejects the entry.
+    const id = pick(record['id']);
+    if (id === undefined) delete normalized['id'];
+    else normalized['id'] = id;
     // Metadata: blank reads as missing, and the CLI parser's aliases are
     // honored (name / shortDescription / websiteURL).
     const metadataAliases = [

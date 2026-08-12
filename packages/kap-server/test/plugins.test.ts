@@ -87,7 +87,8 @@ const CATALOG = {
     },
     {
       // CLI metadata aliases: name / shortDescription / websiteURL.
-      id: 'meta-alias-plugin',
+      // The padded id trims before the install-state join.
+      id: '  meta-alias-plugin  ',
       name: 'Meta Alias',
       shortDescription: 'Aliased metadata',
       websiteURL: 'https://example.test/meta',
