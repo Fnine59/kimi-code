@@ -272,11 +272,11 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(before.body.data.entries.find((e) => e.id === 'third-party-plugin')?.version).toBe(
       '3.1.0',
     );
-    // Capability wiring plugins carry their capability id.
+    // A custom catalog never gets capability markers (same-id forks stay
+    // plain plugins) — markers only apply to the default catalog.
     expect(
       before.body.data.entries.find((e) => e.id === 'kimi-webbridge')?.capabilityId,
-    ).toBe('kimi-webbridge');
-    expect(before.body.data.entries.find((e) => e.id === 'demo-plugin')?.capabilityId).toBeUndefined();
+    ).toBeUndefined();
     // CLI metadata aliases map onto the wire fields.
     const meta = before.body.data.entries.find((e) => e.id === 'meta-alias-plugin');
     expect(meta?.displayName).toBe('Meta Alias');
@@ -420,7 +420,7 @@ describe('server-v2 /api/v1 plugins', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const { body } = await call<{ entries: { id: string; source: string }[] }>(
+    const { body } = await call<{ entries: { id: string; source: string; capabilityId?: string }[] }>(
       'GET',
       '/api/v1/plugins/marketplace',
     );
@@ -429,6 +429,10 @@ describe('server-v2 /api/v1 plugins', () => {
     // Relative sources resolve against the fallback file, not the failed URL.
     expect(datasource?.source.startsWith('http')).toBe(false);
     expect(datasource?.source.endsWith(join('plugins', 'official', 'kimi-datasource'))).toBe(true);
+    // The default catalog (even served from the checkout fallback) marks
+    // capability wiring rows.
+    const webbridge = body.data.entries.find((e) => e.id === 'kimi-webbridge');
+    expect(webbridge?.capabilityId).toBe('kimi-webbridge');
   });
 
   it('expands ~ in local catalog paths like the CLI loader', async () => {
