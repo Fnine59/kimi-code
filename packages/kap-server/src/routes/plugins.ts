@@ -105,12 +105,27 @@ const rawMarketplaceEntrySchema = z.preprocess(
     // the first valid of source / url / downloadUrl wins (trimmed).
     const pick = (v: unknown) =>
       typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
-    // A blank tier means "missing" (third-party), same as the CLI parser.
-    const tier = pick(record['tier']);
-    const source = pick(record['source']) ?? pick(record['url']) ?? pick(record['downloadUrl']);
     const normalized: Record<string, unknown> = { ...record };
-    if (tier === undefined) delete normalized['tier'];
-    else normalized['tier'] = tier;
+    // Metadata: blank reads as missing, and the CLI parser's aliases are
+    // honored (name / shortDescription / websiteURL).
+    const metadataAliases = [
+      ['displayName', 'name'],
+      ['description', 'shortDescription'],
+      ['homepage', 'websiteURL'],
+    ] as const;
+    for (const [field, alias] of metadataAliases) {
+      const value = pick(record[field]) ?? pick(record[alias]);
+      if (value === undefined) delete normalized[field];
+      else normalized[field] = value;
+    }
+    // A blank tier means "missing" (third-party); a non-string tier keeps
+    // failing validation, matching the CLI parser's type error.
+    const tier = record['tier'];
+    if (typeof tier === 'string') {
+      if (tier.trim().length === 0) delete normalized['tier'];
+      else normalized['tier'] = tier.trim();
+    }
+    const source = pick(record['source']) ?? pick(record['url']) ?? pick(record['downloadUrl']);
     // A source with no valid value or alias must fail validation (not slip
     // through as whitespace): drop the key so the schema reports it missing.
     if (source !== undefined) normalized['source'] = source;

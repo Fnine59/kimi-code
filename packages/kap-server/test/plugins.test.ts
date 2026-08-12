@@ -83,6 +83,14 @@ const CATALOG = {
       displayName: 'Kimi WebBridge',
       source: 'https://cdn.example.test/kimi-webbridge.zip',
     },
+    {
+      // CLI metadata aliases: name / shortDescription / websiteURL.
+      id: 'meta-alias-plugin',
+      name: 'Meta Alias',
+      shortDescription: 'Aliased metadata',
+      websiteURL: 'https://example.test/meta',
+      source: 'https://example.test/meta.zip',
+    },
   ],
 };
 
@@ -225,9 +233,12 @@ describe('server-v2 /api/v1 plugins', () => {
       entries: {
         id: string;
         tier: string;
+        displayName: string;
         source: string;
         version?: string;
         capabilityId?: string;
+        description?: string;
+        homepage?: string;
         installed?: { version?: string };
       }[];
     }>('GET', '/api/v1/plugins/marketplace');
@@ -240,6 +251,7 @@ describe('server-v2 /api/v1 plugins', () => {
       ['blank-tier-plugin', 'third-party'],
       ['gh-plugin', 'third-party'],
       ['kimi-webbridge', 'third-party'],
+      ['meta-alias-plugin', 'third-party'],
     ]);
     expect(before.body.data.entries[0]?.installed).toBeUndefined();
     // Catalog-relative sources resolve against the catalog URL.
@@ -260,6 +272,11 @@ describe('server-v2 /api/v1 plugins', () => {
       before.body.data.entries.find((e) => e.id === 'kimi-webbridge')?.capabilityId,
     ).toBe('kimi-webbridge');
     expect(before.body.data.entries.find((e) => e.id === 'demo-plugin')?.capabilityId).toBeUndefined();
+    // CLI metadata aliases map onto the wire fields.
+    const meta = before.body.data.entries.find((e) => e.id === 'meta-alias-plugin');
+    expect(meta?.displayName).toBe('Meta Alias');
+    expect(meta?.description).toBe('Aliased metadata');
+    expect(meta?.homepage).toBe('https://example.test/meta');
 
     // Install an older version than the catalog → updateAvailable.
     const source = await makePluginDir('demo-plugin', '1.0.0');
