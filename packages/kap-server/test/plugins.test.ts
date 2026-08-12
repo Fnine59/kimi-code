@@ -369,6 +369,42 @@ describe('server-v2 /api/v1 plugins', () => {
     ]);
   });
 
+  it('falls back to the source-checkout catalog when the remote is unreachable', async () => {
+    await server?.close();
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        if (typeof url === 'string' && url.includes('/releases/latest')) {
+          return new Response(null, { status: 404 });
+        }
+        if (url === 'https://code.kimi.com/kimi-code/plugins/marketplace.json') {
+          throw new Error('offline');
+        }
+        return realFetch(url as never, init);
+      }),
+    );
+    // No pluginMarketplaceUrl / env: the default production catalog is
+    // unreachable and the repo checkout's own catalog takes over (CLI parity).
+    vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_URL', undefined as unknown as string);
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home!,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const { body } = await call<{ entries: { id: string; source: string }[] }>(
+      'GET',
+      '/api/v1/plugins/marketplace',
+    );
+    expect(body.code).toBe(0);
+    const datasource = body.data.entries.find((e) => e.id === 'kimi-datasource');
+    expect(datasource?.source.endsWith(join('plugins', 'official', 'kimi-datasource'))).toBe(true);
+  });
+
   it('expands ~ in local catalog paths like the CLI loader', async () => {
     await server?.close();
     const fakeHome = await mkdtemp(join(tmpdir(), 'kimi-tilde-home-'));

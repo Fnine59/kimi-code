@@ -37,6 +37,7 @@ import {
   isError2,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -260,9 +261,21 @@ function localCatalogPath(location: string): string {
 }
 
 /**
+ * The repo checkout's own catalog — the CLI loader's fallback when the
+ * configured catalog is unreachable (offline / source-checkout dev). Absent
+ * in bundled installs, where the fallback simply never fires.
+ */
+function sourceCheckoutCatalogPath(): string | undefined {
+  const candidate = resolve(import.meta.dirname, '../../../../plugins/marketplace.json');
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+/**
  * Read the raw marketplace catalog JSON. Remote catalogs go through fetch;
  * local catalogs (plain path or `file://`, both accepted by the CLI loader)
  * are read from disk so the same custom catalog works for desktop/web hosts.
+ * A failed remote read falls back to the source checkout's catalog when one
+ * exists (CLI parity).
  */
 async function readMarketplaceCatalog(opts: PluginsRouteOptions): Promise<unknown> {
   const location = opts.marketplaceUrl;
@@ -270,16 +283,30 @@ async function readMarketplaceCatalog(opts: PluginsRouteOptions): Promise<unknow
     return JSON.parse(await readFile(localCatalogPath(location), 'utf8'));
   }
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const resp = await fetchImpl(location, {
-    signal: AbortSignal.timeout(MARKETPLACE_FETCH_TIMEOUT_MS),
-  });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  return resp.json();
+  try {
+    const resp = await fetchImpl(location, {
+      signal: AbortSignal.timeout(MARKETPLACE_FETCH_TIMEOUT_MS),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.json();
+  } catch (error) {
+    const fallback =
+      opts.marketplaceIsDefault === true ? sourceCheckoutCatalogPath() : undefined;
+    if (fallback === undefined) throw error;
+    return JSON.parse(await readFile(fallback, 'utf8'));
+  }
 }
 
 export interface PluginsRouteOptions {
   /** Resolved catalog URL (server option / env already applied by start.ts). */
   readonly marketplaceUrl: string;
+  /**
+   * True when the catalog location is the built-in default (neither the
+   * server option nor the env var set) — only then does a failed remote read
+   * fall back to the source-checkout catalog (CLI parity: an explicitly
+   * configured catalog fails hard).
+   */
+  readonly marketplaceIsDefault?: boolean;
   readonly fetchImpl?: typeof fetch;
 }
 

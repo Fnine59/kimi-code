@@ -517,6 +517,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       opts.pluginMarketplaceUrl ??
       process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] ??
       DEFAULT_PLUGIN_MARKETPLACE_URL,
+    pluginMarketplaceIsDefault:
+      opts.pluginMarketplaceUrl === undefined &&
+      process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] === undefined,
     onShutdown: () => {
       void close().catch((err: unknown) => logger.error({ err }, 'server close failed'));
     },
