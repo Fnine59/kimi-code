@@ -36,7 +36,8 @@ import {
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
 import { readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { z } from 'zod';
@@ -140,10 +141,18 @@ function resolveEntrySource(source: string, marketplaceUrl: string): string {
       return source;
     }
   }
-  const catalogPath = marketplaceUrl.startsWith('file://')
-    ? fileURLToPath(marketplaceUrl)
-    : marketplaceUrl;
-  return resolve(dirname(catalogPath), source);
+  return resolve(dirname(localCatalogPath(marketplaceUrl)), source);
+}
+
+/**
+ * Local catalog location → filesystem path: `file://` conversion plus the
+ * same `~` / `~/` home expansion the CLI loader applies.
+ */
+function localCatalogPath(location: string): string {
+  const raw = location.startsWith('file://') ? fileURLToPath(location) : location;
+  if (raw === '~') return homedir();
+  if (raw.startsWith('~/')) return join(homedir(), raw.slice(2));
+  return raw;
 }
 
 /**
@@ -154,8 +163,7 @@ function resolveEntrySource(source: string, marketplaceUrl: string): string {
 async function readMarketplaceCatalog(opts: PluginsRouteOptions): Promise<unknown> {
   const location = opts.marketplaceUrl;
   if (!/^https?:\/\//.test(location)) {
-    const catalogPath = location.startsWith('file://') ? fileURLToPath(location) : location;
-    return JSON.parse(await readFile(catalogPath, 'utf8'));
+    return JSON.parse(await readFile(localCatalogPath(location), 'utf8'));
   }
   const fetchImpl = opts.fetchImpl ?? fetch;
   const resp = await fetchImpl(location, {

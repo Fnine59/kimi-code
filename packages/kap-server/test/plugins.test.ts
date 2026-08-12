@@ -95,6 +95,7 @@ describe('server-v2 /api/v1 plugins', () => {
 
   afterEach(async () => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -285,5 +286,32 @@ describe('server-v2 /api/v1 plugins', () => {
         source: fileUrlPluginPath,
       },
     ]);
+  });
+
+  it('expands ~ in local catalog paths like the CLI loader', async () => {
+    await server?.close();
+    const fakeHome = await mkdtemp(join(tmpdir(), 'kimi-tilde-home-'));
+    createdDirs.push(fakeHome);
+    await writeFile(
+      join(fakeHome, 'marketplace.json'),
+      JSON.stringify({ plugins: [{ id: 'tilde-plugin', source: 'https://example.test/t.zip' }] }),
+    );
+    vi.stubEnv('HOME', fakeHome);
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home!,
+      logLevel: 'silent',
+      pluginMarketplaceUrl: '~/marketplace.json',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const { body } = await call<{ entries: { id: string }[] }>(
+      'GET',
+      '/api/v1/plugins/marketplace',
+    );
+    expect(body.code).toBe(0);
+    expect(body.data.entries.map((e) => e.id)).toEqual(['tilde-plugin']);
   });
 });
