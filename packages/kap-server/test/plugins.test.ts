@@ -17,6 +17,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -242,12 +243,14 @@ describe('server-v2 /api/v1 plugins', () => {
     await server?.close();
     const catalogDir = await mkdtemp(join(tmpdir(), 'kimi-local-catalog-'));
     createdDirs.push(catalogDir);
+    const fileUrlPluginPath = join(catalogDir, 'plugins', 'file.zip');
     await writeFile(
       join(catalogDir, 'marketplace.json'),
       JSON.stringify({
         plugins: [
           { id: 'local-plugin', source: './zips/local.zip' },
-          { id: 'file-url-plugin', source: 'file:///abs/plugins/file.zip' },
+          // Portable absolute file URL (drive-rooted on Windows).
+          { id: 'file-url-plugin', source: pathToFileURL(fileUrlPluginPath).href },
         ],
       }),
     );
@@ -279,7 +282,7 @@ describe('server-v2 /api/v1 plugins', () => {
         tier: 'third-party',
         displayName: 'file-url-plugin',
         // file:// sources convert to plain absolute paths (installable).
-        source: '/abs/plugins/file.zip',
+        source: fileUrlPluginPath,
       },
     ]);
   });

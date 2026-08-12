@@ -88,9 +88,9 @@ describe('server-v2 /api/v1 capabilities', () => {
       expect(capabilityStatusSchema.parse(capability)).toBeTruthy();
       expect(capability.install.running).toBe(false);
     }
-    // Platform-gated entry: kimi-cu is macOS-only.
+    // Platform-gated entry: kimi-cu runs on macOS and Windows x64.
     const kimiCu = parsed.capabilities.find((c) => c.id === 'kimi-cu');
-    if (process.platform === 'darwin') {
+    if (process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64')) {
       expect(kimiCu?.supported).toBe(true);
     } else {
       expect(kimiCu?.supported).toBe(false);
