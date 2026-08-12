@@ -63,6 +63,13 @@ const CATALOG = {
       source: '   ',
       url: './plugins/alias.zip',
     },
+    {
+      // A blank tier reads as missing (third-party), not a validation error.
+      id: 'blank-tier-plugin',
+      displayName: 'Blank Tier',
+      tier: '  ',
+      source: 'https://example.test/bt.zip',
+    },
   ],
 };
 
@@ -200,6 +207,7 @@ describe('server-v2 /api/v1 plugins', () => {
       ['third-party-plugin', 'third-party'],
       ['relative-plugin', 'third-party'],
       ['alias-plugin', 'third-party'],
+      ['blank-tier-plugin', 'third-party'],
     ]);
     expect(before.body.data.entries[0]?.installed).toBeUndefined();
     // Catalog-relative sources resolve against the catalog URL.

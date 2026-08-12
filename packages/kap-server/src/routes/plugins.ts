@@ -89,8 +89,14 @@ const rawMarketplaceEntrySchema = z.preprocess(
     // the first valid of source / url / downloadUrl wins (trimmed).
     const pick = (v: unknown) =>
       typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+    // A blank tier means "missing" (third-party), same as the CLI parser.
+    const tier = pick(record['tier']);
     const source = pick(record['source']) ?? pick(record['url']) ?? pick(record['downloadUrl']);
-    return source === undefined ? value : { ...record, source };
+    const normalized: Record<string, unknown> = { ...record };
+    if (tier === undefined) delete normalized['tier'];
+    else normalized['tier'] = tier;
+    if (source !== undefined) normalized['source'] = source;
+    return normalized;
   },
   z.object({
     id: z.string().min(1),
