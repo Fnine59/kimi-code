@@ -85,9 +85,12 @@ const rawMarketplaceEntrySchema = z.preprocess(
   (value) => {
     if (typeof value !== 'object' || value === null) return value;
     const record = value as Record<string, unknown>;
-    if (record['source'] !== undefined) return value;
-    const alias = record['url'] ?? record['downloadUrl'];
-    return typeof alias === 'string' ? { ...record, source: alias } : value;
+    // CLI stringField semantics: non-string or blank counts as missing, and
+    // the first valid of source / url / downloadUrl wins (trimmed).
+    const pick = (v: unknown) =>
+      typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+    const source = pick(record['source']) ?? pick(record['url']) ?? pick(record['downloadUrl']);
+    return source === undefined ? value : { ...record, source };
   },
   z.object({
     id: z.string().min(1),

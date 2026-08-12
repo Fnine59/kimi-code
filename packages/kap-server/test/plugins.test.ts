@@ -56,9 +56,11 @@ const CATALOG = {
       source: './plugins/relative.zip',
     },
     {
-      // Legacy `url` alias (accepted by the CLI parser).
+      // Legacy `url` alias (accepted by the CLI parser); a blank `source`
+      // must not shadow the alias.
       id: 'alias-plugin',
       displayName: 'Alias',
+      source: '   ',
       url: './plugins/alias.zip',
     },
   ],
@@ -302,7 +304,9 @@ describe('server-v2 /api/v1 plugins', () => {
         ],
       }),
     );
+    // os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
     vi.stubEnv('HOME', fakeHome);
+    vi.stubEnv('USERPROFILE', fakeHome);
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
