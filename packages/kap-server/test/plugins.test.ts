@@ -87,6 +87,13 @@ const CATALOG = {
       source: 'https://cdn.example.test/kimi-webbridge.zip',
     },
     {
+      // kimi-cu joins install state through the platform wiring id too
+      // ('kimi-cu-win' on Windows x64).
+      id: 'kimi-cu',
+      displayName: 'Kimi Computer Use',
+      source: 'https://cdn.example.test/kimi-cu.zip',
+    },
+    {
       // CLI metadata aliases: name / shortDescription / websiteURL.
       // The padded id trims before the install-state join.
       id: '  meta-alias-plugin  ',
@@ -257,6 +264,7 @@ describe('server-v2 /api/v1 plugins', () => {
       ['blank-tier-plugin', 'third-party'],
       ['gh-plugin', 'third-party'],
       ['kimi-webbridge', 'third-party'],
+      ['kimi-cu', 'third-party'],
       ['meta-alias-plugin', 'third-party'],
     ]);
     expect(before.body.data.entries[0]?.installed).toBeUndefined();
@@ -373,6 +381,17 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(body.data.entries.find((e) => e.id === 'kimi-webbridge')?.capabilityId).toBe(
       'kimi-webbridge',
     );
+
+    // A plugin installed under the Windows wiring id still marks the
+    // kimi-cu row installed (the join follows the capability's plugin ids).
+    const winSource = await makePluginDir('kimi-cu-win', '0.5.4');
+    await call('POST', '/api/v1/plugins', { source: winSource });
+    const after = await call<{
+      entries: { id: string; capabilityId?: string; installed?: { version?: string } }[];
+    }>('GET', '/api/v1/plugins/marketplace');
+    const cu = after.body.data.entries.find((e) => e.id === 'kimi-cu');
+    expect(cu?.capabilityId).toBe('kimi-cu');
+    expect(cu?.installed?.version).toBe('0.5.4');
   });
 
   it('maps an unreachable marketplace to 50001', async () => {

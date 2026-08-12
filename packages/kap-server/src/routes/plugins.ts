@@ -89,10 +89,14 @@ const PLUGIN_ACTIONS = ['enable', 'disable', 'remove'] as const;
  * them through `/capabilities/{id}:install` — a plain `POST /plugins`
  * installs only the wiring layer, never the binary runtime.
  */
-const CAPABILITY_ROW_IDS: Readonly<Record<string, string>> = {
-  'kimi-cu': 'kimi-cu',
-  'kimi-cu-win': 'kimi-cu',
-  'kimi-webbridge': 'kimi-webbridge',
+const CAPABILITY_ROW_IDS: Readonly<
+  Record<string, { capabilityId: string; wiringPluginIds: readonly string[] }>
+> = {
+  // kimi-cu's wiring plugin id is platform-specific ('kimi-cu-win' on
+  // Windows x64); the catalog row joins install state through either id.
+  'kimi-cu': { capabilityId: 'kimi-cu', wiringPluginIds: ['kimi-cu', 'kimi-cu-win'] },
+  'kimi-cu-win': { capabilityId: 'kimi-cu', wiringPluginIds: ['kimi-cu', 'kimi-cu-win'] },
+  'kimi-webbridge': { capabilityId: 'kimi-webbridge', wiringPluginIds: ['kimi-webbridge'] },
 };
 
 const MARKETPLACE_FETCH_TIMEOUT_MS = 10_000;
@@ -416,7 +420,13 @@ export function registerPluginsRoutes(
       const installed = await core.accessor.get(IPluginService).listPlugins();
       const byId = new Map(installed.map((p) => [p.id, p]));
       const entries: PluginMarketplaceEntryWire[] = resolved.map(({ entry, source, version }) => {
-        const record = byId.get(entry.id);
+        const capabilityRow =
+          opts.marketplaceIsDefault === true ? CAPABILITY_ROW_IDS[entry.id] : undefined;
+        const record =
+          byId.get(entry.id) ??
+          capabilityRow?.wiringPluginIds
+            .map((id) => byId.get(id))
+            .find((candidate) => candidate !== undefined);
         const installedInfo =
           record === undefined
             ? undefined
@@ -436,8 +446,7 @@ export function registerPluginsRoutes(
           source,
           installed: installedInfo,
           updateAvailable: updateAvailable ? true : undefined,
-          capabilityId:
-            opts.marketplaceIsDefault === true ? CAPABILITY_ROW_IDS[entry.id] : undefined,
+          capabilityId: capabilityRow?.capabilityId,
         };
       });
       reply.send(okEnvelope({ entries }, req.id));
