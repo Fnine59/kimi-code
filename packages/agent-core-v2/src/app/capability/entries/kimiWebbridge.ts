@@ -15,12 +15,23 @@
  * missing and re-downloads). Legacy standalone skill copies are moved into
  * a Kimi Code backup after the managed plugin has been refreshed, so plugin
  * updates become authoritative without deleting user files.
+ *
+ * The plugin zip follows the region `cdnBase` via `ctx.resolveRegion`
+ * (falling back to env override > install marker > cn default without the
+ * hook); the daemon binary is a content-CDN artifact and funnels through
+ * `kimiCdnContentUrl`.
  */
 
 import { constants } from 'node:fs';
 import { access, chmod, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+
+import {
+  kimiCdnContentUrl,
+  kimiRegionProfile,
+  resolveKimiRegion,
+} from '@moonshot-ai/kimi-code-oauth';
 
 import { downloadToFile, runCommand } from '../host';
 import type {
@@ -32,9 +43,8 @@ import type {
 import type { CapabilityEntryContext } from './context';
 
 const PLUGIN_ID = 'kimi-webbridge';
-const PLUGIN_ZIP_URL =
-  'https://code.kimi.com/kimi-code/plugins/official/kimi-webbridge.zip';
-const BINARY_CDN_BASE = 'https://cdn.kimi.com/webbridge/latest/releases';
+const PLUGIN_ZIP_PATH = 'plugins/official/kimi-webbridge.zip';
+const BINARY_CDN_PATH = 'webbridge/latest/releases';
 const DEFAULT_DAEMON_BASE_URL = 'http://127.0.0.1:10086';
 const STATUS_TIMEOUT_MS = 1_500;
 const START_TIMEOUT_MS = 30_000;
@@ -236,7 +246,10 @@ export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): Capabilit
     }
 
     report('skill');
-    const summary = await ctx.plugins.installPlugin({ source: PLUGIN_ZIP_URL });
+    const region = (await ctx.resolveRegion?.()) ?? resolveKimiRegion();
+    const summary = await ctx.plugins.installPlugin({
+      source: `${kimiRegionProfile(region).cdnBase}/${PLUGIN_ZIP_PATH}`,
+    });
     if (!summary.enabled) {
       await ctx.plugins.setPluginEnabled({ id: PLUGIN_ID, enabled: true });
     }
@@ -258,7 +271,7 @@ export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): Capabilit
     asset: string,
   ): Promise<void> {
     report('download', 0);
-    const url = `${BINARY_CDN_BASE}/${asset}`;
+    const url = kimiCdnContentUrl(`${BINARY_CDN_PATH}/${asset}`);
     const staging = path.join(
       tmpdir(),
       `kimi-webbridge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ctx.platform === 'win32' ? '.exe' : ''}`,

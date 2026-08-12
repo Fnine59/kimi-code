@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { gt, valid } from 'semver';
 
 import {
-  KIMI_CODE_PLUGIN_MARKETPLACE_URL,
   KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV,
+  kimiCodePluginMarketplaceUrl,
 } from '#/constant/app';
 
 export const PLUGIN_MARKETPLACE_TIERS = ['official', 'curated'] as const;
@@ -90,7 +90,7 @@ export async function loadPluginMarketplace(
 ): Promise<PluginMarketplace> {
   const configuredSource = options.source ?? process.env[KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV];
   const location = resolveMarketplaceLocation(
-    configuredSource ?? KIMI_CODE_PLUGIN_MARKETPLACE_URL,
+    configuredSource ?? kimiCodePluginMarketplaceUrl(),
     options.workDir,
   );
   const fetchImpl = options.fetchImpl ?? fetch;

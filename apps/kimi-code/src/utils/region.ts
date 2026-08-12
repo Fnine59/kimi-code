@@ -1,0 +1,55 @@
+/**
+ * Process-wide region cache for the CLI/TUI.
+ *
+ * Region decides which deployment (mainland-China .com / international .ai)
+ * the client's off-session endpoints point at: CDN (updates, plugins, tips),
+ * site links, telemetry. The OAuth login flow itself does NOT read this — it
+ * takes explicit hosts; this cache is for everything derived afterwards.
+ *
+ * Resolution lives in `@moonshot-ai/kimi-code-oauth` (see `resolveKimiRegion`);
+ * this module only adds the one thing that package deliberately does not own:
+ * reading the persisted login's `oauthHost` out of config.toml, synchronously,
+ * via the SDK's safe config reader. First call wins; `refreshKimiRegion`
+ * re-resolves after login/logout rewrote the oauth ref.
+ */
+
+import { loadRuntimeConfigSafe, resolveConfigPath } from '@moonshot-ai/kimi-code-sdk';
+import {
+  KIMI_REGION_PROFILES,
+  resolveKimiRegion,
+  type KimiRegion,
+  type KimiRegionProfile,
+} from '@moonshot-ai/kimi-code-oauth';
+
+// Same value as DEFAULT_OAUTH_PROVIDER_NAME in '#/constant/app' — inlined here
+// to keep the import one-directional (constant/app derives URLs from this
+// module, so this module must not import back from it).
+const MANAGED_KIMI_CODE_PROVIDER_KEY = 'managed:kimi-code';
+
+/** Platform-selector value for the international OAuth login entry. */
+export const KIMI_CODE_OVERSEAS_PLATFORM_VALUE = 'kimi-code-overseas';
+
+let cached: KimiRegion | undefined;
+
+/** The oauth host persisted by a previous non-default login, if any. */
+export function persistedKimiOAuthHost(): string | undefined {
+  const result = loadRuntimeConfigSafe(resolveConfigPath({}));
+  // `providers` is always present on a real config load; the `?.` guards
+  // hosts/tests that hand us a partial config shape.
+  return result.config.providers?.[MANAGED_KIMI_CODE_PROVIDER_KEY]?.oauth?.oauthHost;
+}
+
+export function currentKimiRegion(): KimiRegion {
+  cached ??= resolveKimiRegion({ configuredOAuthHost: persistedKimiOAuthHost() });
+  return cached;
+}
+
+export function currentKimiProfile(): KimiRegionProfile {
+  return KIMI_REGION_PROFILES[currentKimiRegion()];
+}
+
+/** Drop the cache and re-resolve. Call after login/logout rewrote config. */
+export function refreshKimiRegion(): KimiRegion {
+  cached = undefined;
+  return currentKimiRegion();
+}

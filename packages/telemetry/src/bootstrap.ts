@@ -20,6 +20,11 @@ export interface TelemetryBootstrapOptions {
   readonly terminal?: string;
   readonly locale?: string;
   readonly getAccessToken?: () => string | null | Promise<string | null>;
+  /**
+   * Region-aware endpoint derived by the composition root (this package stays
+   * dependency-free and keeps the cn default in `TELEMETRY_ENDPOINT`).
+   */
+  readonly endpoint?: string;
 }
 
 export function isTelemetryDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -49,6 +54,7 @@ export function initializeTelemetry(options: TelemetryBootstrapOptions): void {
   const transport = new AsyncTransport({
     homeDir: options.homeDir,
     deviceId: options.deviceId,
+    endpoint: options.endpoint,
     getAccessToken: options.getAccessToken,
   });
   const sink = new EventSink({

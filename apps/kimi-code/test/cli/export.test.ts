@@ -14,6 +14,7 @@ import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleExport, registerExportCommand } from '#/cli/sub/export';
+import { refreshKimiRegion } from '#/utils/region';
 import type { ExportDeps } from '#/cli/sub/export';
 import type {
   ExportSessionInput,
@@ -105,11 +106,16 @@ beforeEach(() => {
   // Pin the legacy engine so the default-deps cases keep exercising the legacy
   // SDK harness this suite asserts on; the routing cases below re-stub it.
   vi.stubEnv('KIMI_CODE_LEGACY_FLAG', '1');
+  // Pin region to cn: the telemetry endpoint assertion must not follow the
+  // dev machine's own login/marker state.
+  vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://auth.kimi.com');
+  refreshKimiRegion();
   tmp = mkdtempSync(join(tmpdir(), 'kimi-export-'));
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  refreshKimiRegion();
   rmSync(tmp, { recursive: true, force: true });
   vi.clearAllMocks();
   mocks.harnessGetConfig.mockResolvedValue({
@@ -426,6 +432,7 @@ describe('kimi export', () => {
       uiMode: 'shell',
       model: 'k2',
       sessionId: undefined,
+      endpoint: 'https://telemetry-logs.kimi.com/v1/event',
       getAccessToken: expect.any(Function),
     });
     expect(mocks.initializeTelemetry.mock.invocationCallOrder[0]).toBeLessThan(

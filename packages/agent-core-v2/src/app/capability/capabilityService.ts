@@ -6,10 +6,16 @@
  * polled by clients; a failed attempt leaves its error in the progress state
  * until the next attempt starts and logs the failure through `log`. Listing
  * degrades a single entry's failing detection to a failed step on that entry
- * instead of rejecting the whole list. Bound at App scope.
+ * instead of rejecting the whole list. Entry download URLs resolve their
+ * Kimi region from the persisted login host read through `IProviderService`
+ * (synchronously, at install time — provider config has hydrated by then;
+ * earlier reads fall through to env override > install marker > cn default).
+ * Bound at App scope.
  */
 
 import { homedir } from 'node:os';
+
+import { KIMI_CODE_PROVIDER_NAME, resolveKimiRegion } from '@moonshot-ai/kimi-code-oauth';
 
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -17,6 +23,7 @@ import { ILogService } from '#/_base/log/log';
 import { Error2 } from '#/errors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IProviderService } from '#/kosong/provider/provider';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 
 import { ICapabilityService } from './capability';
@@ -45,6 +52,7 @@ export class CapabilityService implements ICapabilityService {
     @IPluginService plugins: IPluginService,
     @IHostProcessService hostProcess: IHostProcessService,
     @ILogService private readonly log: ILogService,
+    @IProviderService providers: IProviderService,
     entriesOverride?: readonly CapabilityEntry[],
   ) {
     if (entriesOverride !== undefined) {
@@ -57,6 +65,10 @@ export class CapabilityService implements ICapabilityService {
         userHomeDir: homedir(),
         plugins,
         hostProcess,
+        resolveRegion: () =>
+          resolveKimiRegion({
+            configuredOAuthHost: providers.get(KIMI_CODE_PROVIDER_NAME)?.oauth?.oauthHost,
+          }),
       };
       this.entries = new Map<CapabilityId, CapabilityEntry>([
         ['kimi-cu', createKimiCuEntry(ctx)],

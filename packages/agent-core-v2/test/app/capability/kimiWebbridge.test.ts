@@ -292,6 +292,28 @@ describe('kimi-webbridge entry', () => {
     expect(reports.some(([step]) => step === 'skill')).toBe(true);
   });
 
+  it('installs the plugin zip from the overseas CDN when the region is overseas', async () => {
+    const plugins = fakePlugins([]);
+    const host = fakeHostProcess();
+    const { fetchImpl } = fakeFetch({
+      statusSequence: [{ running: true, version: 'v1.11.3', extension_connected: true }],
+    });
+    const entry = createKimiWebbridgeEntry(
+      makeCtx({
+        plugins: plugins.service,
+        hostProcess: host.service,
+        fetchImpl,
+        resolveRegion: () => 'overseas',
+      }),
+    );
+
+    await entry.install(() => {});
+
+    expect(plugins.installs).toEqual([
+      'https://code.kimi.ai/kimi-code/plugins/official/kimi-webbridge.zip',
+    ]);
+  });
+
   it('never starts the daemon when one is already running (coexistence)', async () => {
     const plugins = fakePlugins([]);
     const host = fakeHostProcess();

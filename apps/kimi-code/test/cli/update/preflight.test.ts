@@ -24,6 +24,7 @@ import {
   type UpdateManifest,
 } from '#/cli/update/types';
 import type { TuiConfig } from '#/tui/config';
+import { refreshKimiRegion } from '#/utils/region';
 
 const mocks = vi.hoisted(() => ({
   readUpdateCache: vi.fn(),
@@ -238,6 +239,10 @@ describe('runUpdatePreflight', () => {
     // regardless of the host environment (the flag bypasses batch holds).
     // Tests that exercise the bypass opt back in with `vi.stubEnv(..., '1')`.
     vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '');
+    // Pin the region to cn so address assertions don't follow the dev
+    // machine's own login/marker state; overseas tests override below.
+    vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://auth.kimi.com');
+    refreshKimiRegion();
     mocks.readUpdateInstallState.mockResolvedValue(emptyUpdateInstallState());
     mocks.writeUpdateInstallState.mockResolvedValue(undefined);
     mocks.loadTuiConfig.mockResolvedValue(tuiConfig());
@@ -250,7 +255,7 @@ describe('runUpdatePreflight', () => {
     mocks.resolveCommandPath.mockImplementation((cmd: string) => cmd);
   });
 
-  afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs(); });
+  afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs(); refreshKimiRegion(); });
 
   it('skips all update work when KIMI_CODE_NO_AUTO_UPDATE is set', async () => {
     vi.stubEnv('KIMI_CODE_NO_AUTO_UPDATE', '1');
@@ -541,6 +546,30 @@ describe('runUpdatePreflight', () => {
       expect(mocks.spawn).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
+  });
+
+  it('overseas region: derives install commands and site links from the .ai profile', async () => {
+    vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://auth.kimi.ai');
+    refreshKimiRegion();
+    mocks.readUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
+    mocks.refreshUpdateCache.mockResolvedValue(cacheWith('0.5.0'));
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      mocks.detectInstallSource.mockResolvedValue('native');
+      const win = captureOutput();
+      await expect(runUpdatePreflight('0.4.0', win.options)).resolves.toBe('continue');
+      expect(win.stdout.join('')).toContain('irm https://code.kimi.ai/kimi-code/install.ps1 | iex');
+
+      mocks.detectInstallSource.mockResolvedValue('homebrew');
+      const brew = captureOutput();
+      await expect(runUpdatePreflight('0.4.0', brew.options)).resolves.toBe('continue');
+      expect(brew.stdout.join('')).toContain('https://www.kimi.ai/code');
+      expect(mocks.spawn).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+      refreshKimiRegion();
     }
   });
 

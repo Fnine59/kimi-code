@@ -60,13 +60,30 @@ function baseOptions(
 
 describe('CloudAppender', () => {
   let homeDir: string;
+  let savedOauthHost: string | undefined;
+  let savedLegacyOauthHost: string | undefined;
+  let savedKimiHome: string | undefined;
 
   beforeEach(() => {
     homeDir = mkdtempSync(join(tmpdir(), 'cloud-appender-'));
+    // Pin region resolution to the cn default: no env override, and a home
+    // dir without a `region` install marker.
+    savedOauthHost = process.env['KIMI_CODE_OAUTH_HOST'];
+    savedLegacyOauthHost = process.env['KIMI_OAUTH_HOST'];
+    savedKimiHome = process.env['KIMI_CODE_HOME'];
+    delete process.env['KIMI_CODE_OAUTH_HOST'];
+    delete process.env['KIMI_OAUTH_HOST'];
+    process.env['KIMI_CODE_HOME'] = homeDir;
   });
 
   afterEach(() => {
     rmSync(homeDir, { recursive: true, force: true });
+    if (savedOauthHost === undefined) delete process.env['KIMI_CODE_OAUTH_HOST'];
+    else process.env['KIMI_CODE_OAUTH_HOST'] = savedOauthHost;
+    if (savedLegacyOauthHost === undefined) delete process.env['KIMI_OAUTH_HOST'];
+    else process.env['KIMI_OAUTH_HOST'] = savedLegacyOauthHost;
+    if (savedKimiHome === undefined) delete process.env['KIMI_CODE_HOME'];
+    else process.env['KIMI_CODE_HOME'] = savedKimiHome;
   });
 
   it('sends a flattened, prefixed payload with user_id and context', async () => {
@@ -101,6 +118,26 @@ describe('CloudAppender', () => {
     expect(typeof event?.['context_core_version']).toBe('string');
     expect(typeof event?.['event_id']).toBe('string');
     expect(typeof event?.['timestamp']).toBe('number');
+  });
+
+  it('derives the overseas endpoint when the env pins the overseas region', async () => {
+    process.env['KIMI_CODE_OAUTH_HOST'] = 'https://auth.kimi.ai';
+    const requests: CapturedRequest[] = [];
+    const appender = new CloudAppender(
+      baseOptions({
+        homeDir,
+        fetchImpl: makeFetch((req) => {
+          requests.push(req);
+          return okResponse();
+        }),
+      }),
+    );
+
+    appender.track('tool.call', { name: 'bash' });
+    await appender.flush();
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe('https://telemetry-logs.kimi.ai/v1/event');
   });
 
   it('applies setContext sessionId and model updates to subsequent events', async () => {

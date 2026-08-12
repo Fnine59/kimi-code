@@ -18,6 +18,7 @@ import type {
   KimiOAuthLoginResult,
   KimiOAuthLogoutResult,
   KimiOAuthTokenRef,
+  KimiRegion,
 } from '@moonshot-ai/kimi-code-oauth';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Error2 } from '#/_base/errors/errors';
@@ -38,10 +39,20 @@ export interface AuthStatus {
   readonly provider?: string;
 }
 
+export interface OAuthLoginOptions {
+  /**
+   * Explicit region choice from the login UI. Maps to the region profile's
+   * OAuth/API hosts (including for 'cn', so switching back overrides a
+   * persisted overseas login); yields to `KIMI_CODE_OAUTH_HOST` /
+   * `KIMI_CODE_BASE_URL` env overrides.
+   */
+  readonly region?: KimiRegion;
+}
+
 export interface IOAuthService {
   readonly _serviceBrand: undefined;
 
-  startLogin(provider?: string): Promise<OAuthFlowStart>;
+  startLogin(provider?: string, options?: OAuthLoginOptions): Promise<OAuthFlowStart>;
   getFlow(provider?: string): OAuthFlowSnapshot | undefined;
   cancelLogin(provider?: string): Promise<OAuthLoginCancelResponse>;
   logout(provider?: string): Promise<OAuthLogoutResponse>;
@@ -51,6 +62,12 @@ export interface IOAuthService {
   getManagedUserInfo(provider?: string): Promise<AuthManagedUserInfoResult>;
   resolveTokenProvider(provider: string, oauthRef?: OAuthRef): BearerTokenProvider | undefined;
   getCachedAccessToken(provider: string, oauthRef?: OAuthRef): Promise<string | undefined>;
+  /**
+   * Resolve the client's region (env override → persisted login → install
+   * marker → 'cn'). Hosts that must ignore the install marker set
+   * `KIMI_CODE_REGION_MARKER=off` (e.g. the desktop app's embedded server).
+   */
+  getRegion(): KimiRegion;
 }
 
 export const IOAuthService: ServiceIdentifier<IOAuthService> =

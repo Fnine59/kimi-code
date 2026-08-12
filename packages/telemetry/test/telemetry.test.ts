@@ -851,6 +851,24 @@ describe('telemetry bootstrap', () => {
     });
   });
 
+  it('forwards a caller-provided endpoint to the transport', async () => {
+    const fetchImpl = vi.fn(async (_input: unknown) => new Response('', { status: 200 }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    initializeTelemetry({
+      homeDir: await tempHome(),
+      deviceId: 'dev',
+      appName: 'kimi-code-cli',
+      version: '1.2.3',
+      endpoint: 'https://mock.test/events',
+    });
+    track('custom_endpoint');
+    await shutdownTelemetry();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://mock.test/events');
+  });
+
   it('flushes the singleton synchronously to disk fallback', async () => {
     const homeDir = await tempHome();
     initializeTelemetry({

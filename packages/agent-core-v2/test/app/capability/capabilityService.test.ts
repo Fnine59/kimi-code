@@ -43,12 +43,13 @@ function fakeService(
   entries: readonly CapabilityEntry[],
   log: ILogService = stubLog(),
 ): CapabilityService {
-  // bootstrap / hostProcess are unused when entries are injected.
   return new CapabilityService(
     undefined as never,
     undefined as never,
     undefined as never,
     log,
+    // providers is unused when entries are injected.
+    undefined as never,
     entries,
   );
 }
