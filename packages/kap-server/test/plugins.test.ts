@@ -329,6 +329,52 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(body.msg).toContain('invalid catalog');
   });
 
+  it('rejects a catalog with an unsupported entry type', async () => {
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        if (url === CATALOG_URL) {
+          return new Response(
+            JSON.stringify({
+              plugins: [{ id: 'bad', type: 'integration', source: 'https://example.test/x.zip' }],
+            }),
+            { status: 200 },
+          );
+        }
+        return realFetch(url as never, init);
+      }),
+    );
+    const { body } = await call('GET', '/api/v1/plugins/marketplace');
+    expect(body.code).toBe(50001);
+    expect(body.msg).toContain('invalid catalog');
+  });
+
+  it('treats the dev marketplace server as the default catalog', async () => {
+    // scripts/dev.mjs serves the repo catalog and marks itself; capability
+    // markers apply as if no env were set.
+    await server?.close();
+    vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_URL', CATALOG_URL);
+    vi.stubEnv('KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER', '1');
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home!,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const { body } = await call<{ entries: { id: string; capabilityId?: string }[] }>(
+      'GET',
+      '/api/v1/plugins/marketplace',
+    );
+    expect(body.code).toBe(0);
+    expect(body.data.entries.find((e) => e.id === 'kimi-webbridge')?.capabilityId).toBe(
+      'kimi-webbridge',
+    );
+  });
+
   it('maps an unreachable marketplace to 50001', async () => {
     const realFetch = globalThis.fetch;
     vi.stubGlobal(

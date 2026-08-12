@@ -133,6 +133,10 @@ const rawMarketplaceEntrySchema = z.preprocess(
       if (tier.trim().length === 0) delete normalized['tier'];
       else normalized['tier'] = tier.trim();
     }
+    // `type` trims only; the enum below rejects anything outside the CLI's
+    // plugin / managed / guide vocabulary.
+    const type = record['type'];
+    if (typeof type === 'string') normalized['type'] = type.trim();
     // Keywords keep only non-blank strings (a junk member never fails the
     // catalog); a non-array value reads as missing — CLI stringArrayField
     // semantics.
@@ -162,6 +166,9 @@ const rawMarketplaceEntrySchema = z.preprocess(
   },
   z.object({
     id: z.string().min(1),
+    // The CLI's validateMarketplaceEntryType vocabulary (legacy aliases
+    // included); unknown types must not surface as installable plugins.
+    type: z.enum(['plugin', 'managed', 'guide']).optional(),
     tier: z.enum(['official', 'curated']).optional(),
     displayName: z.string().optional(),
     description: z.string().optional(),
