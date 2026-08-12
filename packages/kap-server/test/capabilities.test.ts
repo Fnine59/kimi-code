@@ -5,7 +5,7 @@
  *   - POST /api/v1/capabilities/{unknown}:install  → 40418
  *   - POST /api/v1/capabilities/{id} (bare)        → 40001
  *   - POST /api/v1/capabilities/{id}:{bogus}       → 40001
- *   - POST /api/v1/capabilities/kimi-cu:install on a non-macOS host → 40923
+ *   - POST /api/v1/capabilities/kimi-cu:install on a non-macOS host → 40924
  *
  * Real installs are never triggered from tests: the only `:install` calls
  * target an unknown id or an unsupported platform. `GET` runs the entries'
@@ -126,10 +126,10 @@ describe('server-v2 /api/v1 capabilities', () => {
   });
 
   it.skipIf(process.platform === 'darwin')(
-    'rejects kimi-cu install on non-macOS with 40923',
+    'rejects kimi-cu install on non-macOS with 40924',
     async () => {
       const { body } = await postJson<unknown>('/api/v1/capabilities/kimi-cu:install');
-      expect(body.code).toBe(40923);
+      expect(body.code).toBe(40924);
     },
   );
 });

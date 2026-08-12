@@ -6,6 +6,7 @@
  *   - POST /plugins/{id}:remove             → removes
  *   - POST bare id / bogus action           → 40001
  *   - POST unknown id :remove               → 40419
+ *   - POST relative / nonexistent source    → 40001 / 40409 (never 50001)
  *   - GET  /plugins/marketplace             → catalog merged with live install state
  *   - GET  /plugins/marketplace unreachable → 50001
  *
@@ -160,6 +161,17 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(unknown.body.code).toBe(40419);
     const badSource = await call('POST', '/api/v1/plugins', { source: '' });
     expect(badSource.body.code).toBe(40001);
+  });
+
+  it('maps client-fixable install input errors to 4xx, never 50001', async () => {
+    // Relative source: the domain rejects non-absolute local paths.
+    const relative = await call('POST', '/api/v1/plugins', { source: 'relative/dir' });
+    expect(relative.body.code).toBe(40001);
+    // Absolute but nonexistent path.
+    const missing = await call('POST', '/api/v1/plugins', {
+      source: join(home!, 'no-such-plugin-dir'),
+    });
+    expect(missing.body.code).toBe(40409);
   });
 
   it('serves the marketplace catalog merged with live install state', async () => {

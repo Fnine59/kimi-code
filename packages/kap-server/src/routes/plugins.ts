@@ -19,12 +19,19 @@
  *
  * **Error mapping**:
  *   - unknown plugin id            → `40419 plugin.not_found` (from the domain code)
+ *   - bad install source / path    → `40001 validation.failed` / `40409 fs.path_not_found`
  *   - malformed `{tail}` / body    → `40001 validation.failed`
  *   - catalog unreachable/invalid  → `50001` with a plain-language message
  *   - other errors                 → `50001` via the global error handler
  */
 
-import { IPluginService, PluginErrors, isError2, type Scope } from '@moonshot-ai/agent-core-v2';
+import {
+  ErrorCodes as DomainErrorCodes,
+  IPluginService,
+  PluginErrors,
+  isError2,
+  type Scope,
+} from '@moonshot-ai/agent-core-v2';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -211,6 +218,7 @@ export function registerPluginsRoutes(
       success: { data: pluginSummarySchema },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
+        [ErrorCode.FS_PATH_NOT_FOUND]: {},
       },
       description: 'Install a plugin from a local path, zip URL, or GitHub repo',
       tags: ['plugins'],
@@ -284,9 +292,18 @@ export function registerPluginsRoutes(
   );
 }
 
+const PLUGIN_ERROR_MAP: Readonly<Record<string, ErrorCode>> = {
+  [PluginErrors.codes.PLUGIN_NOT_FOUND]: ErrorCode.PLUGIN_NOT_FOUND,
+  // Client-fixable input mistakes (relative source, missing local path) keep
+  // their 4xx semantics instead of collapsing into a 50001.
+  [DomainErrorCodes.VALIDATION_FAILED]: ErrorCode.VALIDATION_FAILED,
+  [DomainErrorCodes.FS_PATH_NOT_FOUND]: ErrorCode.FS_PATH_NOT_FOUND,
+};
+
 function mapPluginError(error: unknown, requestId: string) {
-  if (isError2(error) && error.code === PluginErrors.codes.PLUGIN_NOT_FOUND) {
-    return errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, error.message, requestId, error.stack);
+  const mapped = isError2(error) ? PLUGIN_ERROR_MAP[error.code] : undefined;
+  if (mapped !== undefined && isError2(error)) {
+    return errEnvelope(mapped, error.message, requestId, error.stack);
   }
   return errEnvelope(
     ErrorCode.INTERNAL_ERROR,
