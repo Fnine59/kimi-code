@@ -54,6 +54,12 @@ export const pluginMarketplaceEntrySchema = z.object({
     .optional(),
   /** True only when both versions are valid semver and catalog > installed. */
   updateAvailable: z.boolean().optional(),
+  /**
+   * Set when the entry is a built-in capability's wiring plugin — install it
+   * through `/capabilities/{capabilityId}:install` (binary runtime + wiring);
+   * a plain plugin install sets up the wiring layer only.
+   */
+  capabilityId: z.string().optional(),
 });
 export type PluginMarketplaceEntryWire = z.infer<typeof pluginMarketplaceEntrySchema>;
 

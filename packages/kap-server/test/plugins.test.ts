@@ -76,6 +76,13 @@ const CATALOG = {
       displayName: 'GH Plugin',
       source: 'https://github.com/example/gh/releases/tag/v2.0.0',
     },
+    {
+      // A capability's wiring plugin — the response marks it so clients
+      // route the install through the capability surface.
+      id: 'kimi-webbridge',
+      displayName: 'Kimi WebBridge',
+      source: 'https://cdn.example.test/kimi-webbridge.zip',
+    },
   ],
 };
 
@@ -220,6 +227,7 @@ describe('server-v2 /api/v1 plugins', () => {
         tier: string;
         source: string;
         version?: string;
+        capabilityId?: string;
         installed?: { version?: string };
       }[];
     }>('GET', '/api/v1/plugins/marketplace');
@@ -231,6 +239,7 @@ describe('server-v2 /api/v1 plugins', () => {
       ['alias-plugin', 'third-party'],
       ['blank-tier-plugin', 'third-party'],
       ['gh-plugin', 'third-party'],
+      ['kimi-webbridge', 'third-party'],
     ]);
     expect(before.body.data.entries[0]?.installed).toBeUndefined();
     // Catalog-relative sources resolve against the catalog URL.
@@ -246,6 +255,11 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(before.body.data.entries.find((e) => e.id === 'third-party-plugin')?.version).toBe(
       '3.1.0',
     );
+    // Capability wiring plugins carry their capability id.
+    expect(
+      before.body.data.entries.find((e) => e.id === 'kimi-webbridge')?.capabilityId,
+    ).toBe('kimi-webbridge');
+    expect(before.body.data.entries.find((e) => e.id === 'demo-plugin')?.capabilityId).toBeUndefined();
 
     // Install an older version than the catalog → updateAvailable.
     const source = await makePluginDir('demo-plugin', '1.0.0');

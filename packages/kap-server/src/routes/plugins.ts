@@ -78,6 +78,19 @@ interface PluginsRouteHost {
 
 const PLUGIN_ACTIONS = ['enable', 'disable', 'remove'] as const;
 
+/**
+ * Capability wiring plugin id → capability id. The capability registry is a
+ * closed set whose ids belong to the client/engine contract (mirrored by the
+ * klient schema; precedent: the CLI names the same set inline). Marking these
+ * rows lets clients route them through `/capabilities/{id}:install` — a plain
+ * `POST /plugins` installs only the wiring layer, never the binary runtime.
+ */
+const CAPABILITY_ROW_IDS: Readonly<Record<string, string>> = {
+  'kimi-cu': 'kimi-cu',
+  'kimi-cu-win': 'kimi-cu',
+  'kimi-webbridge': 'kimi-webbridge',
+};
+
 const MARKETPLACE_FETCH_TIMEOUT_MS = 10_000;
 
 // Custom catalogs accepted by the CLI may carry the source under the legacy
@@ -346,6 +359,7 @@ export function registerPluginsRoutes(
           source,
           installed: installedInfo,
           updateAvailable: updateAvailable ? true : undefined,
+          capabilityId: CAPABILITY_ROW_IDS[entry.id],
         };
       });
       reply.send(okEnvelope({ entries }, req.id));
