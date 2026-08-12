@@ -15,7 +15,9 @@
  * and merged with the live install state — install status is always detected
  * from the local records, never from the catalog. Catalog-relative sources
  * (`./official/*.zip`) resolve against the catalog location so the returned
- * `source` is directly installable.
+ * `source` is directly installable. Entries without a `version` get one from
+ * a GitHub ref tail or the bare repo's latest release (CLI parity), which is
+ * what drives `updateAvailable`.
  *
  * **Action suffix**: `:enable` / `:disable` / `:remove` via `parseActionSuffix`
  * (bare ids rejected).
