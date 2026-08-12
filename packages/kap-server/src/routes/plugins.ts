@@ -133,26 +133,32 @@ function resolveEntrySource(source: string, marketplaceUrl: string): string {
   // `file://` entry sources convert to filesystem paths up front — the
   // install normalizer only accepts http(s) or absolute local paths.
   if (source.startsWith('file://')) return fileURLToPath(source);
-  if (isAbsolute(source)) return source;
+  // Home-relative entry sources expand before any absolute/relative decision.
+  const expanded = expandHome(source);
+  if (isAbsolute(expanded)) return expanded;
   if (/^https?:\/\//.test(marketplaceUrl)) {
     try {
-      return new URL(source, marketplaceUrl).href;
+      return new URL(expanded, marketplaceUrl).href;
     } catch {
-      return source;
+      return expanded;
     }
   }
-  return resolve(dirname(localCatalogPath(marketplaceUrl)), source);
+  return resolve(dirname(localCatalogPath(marketplaceUrl)), expanded);
+}
+
+/** `~` / `~/` home expansion, same as the CLI loader's resolveLocalPath. */
+function expandHome(input: string): string {
+  if (input === '~') return homedir();
+  if (input.startsWith('~/')) return join(homedir(), input.slice(2));
+  return input;
 }
 
 /**
- * Local catalog location → filesystem path: `file://` conversion plus the
- * same `~` / `~/` home expansion the CLI loader applies.
+ * Local catalog location → filesystem path: `file://` conversion plus home
+ * expansion.
  */
 function localCatalogPath(location: string): string {
-  const raw = location.startsWith('file://') ? fileURLToPath(location) : location;
-  if (raw === '~') return homedir();
-  if (raw.startsWith('~/')) return join(homedir(), raw.slice(2));
-  return raw;
+  return expandHome(location.startsWith('file://') ? fileURLToPath(location) : location);
 }
 
 /**

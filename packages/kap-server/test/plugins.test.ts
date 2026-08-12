@@ -294,7 +294,13 @@ describe('server-v2 /api/v1 plugins', () => {
     createdDirs.push(fakeHome);
     await writeFile(
       join(fakeHome, 'marketplace.json'),
-      JSON.stringify({ plugins: [{ id: 'tilde-plugin', source: 'https://example.test/t.zip' }] }),
+      JSON.stringify({
+        plugins: [
+          { id: 'tilde-plugin', source: 'https://example.test/t.zip' },
+          // Home-relative entry source expands against the stubbed HOME.
+          { id: 'tilde-entry-plugin', source: '~/plugins/t.zip' },
+        ],
+      }),
     );
     vi.stubEnv('HOME', fakeHome);
     server = await startServer({
@@ -307,11 +313,12 @@ describe('server-v2 /api/v1 plugins', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const { body } = await call<{ entries: { id: string }[] }>(
+    const { body } = await call<{ entries: { id: string; source: string }[] }>(
       'GET',
       '/api/v1/plugins/marketplace',
     );
     expect(body.code).toBe(0);
-    expect(body.data.entries.map((e) => e.id)).toEqual(['tilde-plugin']);
+    expect(body.data.entries.map((e) => e.id)).toEqual(['tilde-plugin', 'tilde-entry-plugin']);
+    expect(body.data.entries[1]?.source).toBe(join(fakeHome, 'plugins', 't.zip'));
   });
 });
