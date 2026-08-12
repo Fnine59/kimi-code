@@ -125,6 +125,20 @@ const rawMarketplaceEntrySchema = z.preprocess(
       if (tier.trim().length === 0) delete normalized['tier'];
       else normalized['tier'] = tier.trim();
     }
+    // Keywords keep only non-blank strings (a junk member never fails the
+    // catalog); a non-array value reads as missing — CLI stringArrayField
+    // semantics.
+    const keywords = record['keywords'];
+    if (keywords !== undefined) {
+      const kept = Array.isArray(keywords)
+        ? keywords
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter((item) => item.length > 0)
+        : [];
+      if (kept.length > 0) normalized['keywords'] = kept;
+      else delete normalized['keywords'];
+    }
     const source = pick(record['source']) ?? pick(record['url']) ?? pick(record['downloadUrl']);
     // A source with no valid value or alias must fail validation (not slip
     // through as whitespace): drop the key so the schema reports it missing.

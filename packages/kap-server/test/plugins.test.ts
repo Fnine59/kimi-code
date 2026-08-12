@@ -89,6 +89,7 @@ const CATALOG = {
       name: 'Meta Alias',
       shortDescription: 'Aliased metadata',
       websiteURL: 'https://example.test/meta',
+      keywords: ['web', 3, '  ', 'tools'],
       source: 'https://example.test/meta.zip',
     },
   ],
@@ -239,6 +240,7 @@ describe('server-v2 /api/v1 plugins', () => {
         capabilityId?: string;
         description?: string;
         homepage?: string;
+        keywords?: string[];
         installed?: { version?: string };
       }[];
     }>('GET', '/api/v1/plugins/marketplace');
@@ -277,6 +279,8 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(meta?.displayName).toBe('Meta Alias');
     expect(meta?.description).toBe('Aliased metadata');
     expect(meta?.homepage).toBe('https://example.test/meta');
+    // Keywords filter to non-blank strings instead of failing the catalog.
+    expect(meta?.keywords).toEqual(['web', 'tools']);
 
     // Install an older version than the catalog → updateAvailable.
     const source = await makePluginDir('demo-plugin', '1.0.0');
