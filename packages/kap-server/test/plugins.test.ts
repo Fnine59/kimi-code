@@ -236,4 +236,39 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(body.code).toBe(50001);
     expect(body.msg).toContain('unreachable');
   });
+
+  it('reads a local marketplace catalog from disk (plain path or file://)', async () => {
+    // Restart with a file-based catalog — the same env the CLI accepts.
+    await server?.close();
+    const catalogDir = await mkdtemp(join(tmpdir(), 'kimi-local-catalog-'));
+    createdDirs.push(catalogDir);
+    await writeFile(
+      join(catalogDir, 'marketplace.json'),
+      JSON.stringify({ plugins: [{ id: 'local-plugin', source: './zips/local.zip' }] }),
+    );
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home!,
+      logLevel: 'silent',
+      pluginMarketplaceUrl: join(catalogDir, 'marketplace.json'),
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const { body } = await call<{ entries: { id: string; source: string }[] }>(
+      'GET',
+      '/api/v1/plugins/marketplace',
+    );
+    expect(body.code).toBe(0);
+    expect(body.data.entries).toEqual([
+      {
+        id: 'local-plugin',
+        tier: 'third-party',
+        displayName: 'local-plugin',
+        // Relative sources resolve against the catalog file's directory.
+        source: join(catalogDir, 'zips', 'local.zip'),
+      },
+    ]);
+  });
 });

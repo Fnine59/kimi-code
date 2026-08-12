@@ -9,12 +9,13 @@
  * Thin projection of the App-scope `IPluginService` (install/remove/enable
  * are serialized there and fire `onDidReload`, which converges session skill
  * catalogs and the capability shelf-install hook). The marketplace catalog is
- * fetched on demand from the configured URL (`pluginMarketplaceUrl` server
+ * read on demand from the configured location (`pluginMarketplaceUrl` server
  * option, env `KIMI_CODE_PLUGIN_MARKETPLACE_URL`, default the production
- * catalog) and merged with the live install state — install status is always
- * detected from the local records, never from the catalog. Catalog-relative
- * sources (`./official/*.zip`) are resolved against the catalog URL so the
- * returned `source` is directly installable.
+ * catalog; plain paths and `file://` URLs read from disk like the CLI loader)
+ * and merged with the live install state — install status is always detected
+ * from the local records, never from the catalog. Catalog-relative sources
+ * (`./official/*.zip`) resolve against the catalog location so the returned
+ * `source` is directly installable.
  *
  * **Action suffix**: `:enable` / `:disable` / `:remove` via `parseActionSuffix`
  * (bare ids rejected).
@@ -34,6 +35,10 @@ import {
   isError2,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
+import { readFile } from 'node:fs/promises';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -116,19 +121,44 @@ function semverGt(a: string, b: string): boolean {
 }
 
 /**
- * Catalog sources may be relative to the catalog URL (the production CDN
+ * Catalog sources may be relative to the catalog location (the production CDN
  * catalog uses `./official/*.zip`). Clients hand `source` back to
  * `POST /plugins`, whose normalizer rejects non-absolute paths — resolve
- * against the catalog URL so every returned source is directly installable.
+ * against the catalog URL (or, for a local catalog, its directory) so every
+ * returned source is directly installable.
  */
 function resolveEntrySource(source: string, marketplaceUrl: string): string {
-  if (/^https?:\/\//.test(source)) return source;
-  if (!/^https?:\/\//.test(marketplaceUrl)) return source;
-  try {
-    return new URL(source, marketplaceUrl).href;
-  } catch {
-    return source;
+  if (/^https?:\/\//.test(source) || isAbsolute(source)) return source;
+  if (/^https?:\/\//.test(marketplaceUrl)) {
+    try {
+      return new URL(source, marketplaceUrl).href;
+    } catch {
+      return source;
+    }
   }
+  const catalogPath = marketplaceUrl.startsWith('file://')
+    ? fileURLToPath(marketplaceUrl)
+    : marketplaceUrl;
+  return resolve(dirname(catalogPath), source);
+}
+
+/**
+ * Read the raw marketplace catalog JSON. Remote catalogs go through fetch;
+ * local catalogs (plain path or `file://`, both accepted by the CLI loader)
+ * are read from disk so the same custom catalog works for desktop/web hosts.
+ */
+async function readMarketplaceCatalog(opts: PluginsRouteOptions): Promise<unknown> {
+  const location = opts.marketplaceUrl;
+  if (!/^https?:\/\//.test(location)) {
+    const catalogPath = location.startsWith('file://') ? fileURLToPath(location) : location;
+    return JSON.parse(await readFile(catalogPath, 'utf8'));
+  }
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const resp = await fetchImpl(location, {
+    signal: AbortSignal.timeout(MARKETPLACE_FETCH_TIMEOUT_MS),
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
 }
 
 export interface PluginsRouteOptions {
@@ -155,14 +185,9 @@ export function registerPluginsRoutes(
       operationId: 'listPluginMarketplace',
     },
     async (req, reply) => {
-      const fetchImpl = opts.fetchImpl ?? fetch;
       let raw: unknown;
       try {
-        const resp = await fetchImpl(opts.marketplaceUrl, {
-          signal: AbortSignal.timeout(MARKETPLACE_FETCH_TIMEOUT_MS),
-        });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        raw = await resp.json();
+        raw = await readMarketplaceCatalog(opts);
       } catch (error) {
         reply.send(
           errEnvelope(
@@ -187,10 +212,7 @@ export function registerPluginsRoutes(
         const installedInfo =
           record === undefined
             ? undefined
-            : {
-                enabled: record.enabled,
-                ...(record.version !== undefined ? { version: record.version } : {}),
-              };
+            : { enabled: record.enabled, version: record.version };
         const updateAvailable =
           entry.version !== undefined &&
           record?.version !== undefined &&
@@ -199,13 +221,13 @@ export function registerPluginsRoutes(
           id: entry.id,
           tier: entry.tier ?? 'third-party',
           displayName: entry.displayName ?? entry.id,
-          ...(entry.description !== undefined ? { description: entry.description } : {}),
-          ...(entry.homepage !== undefined ? { homepage: entry.homepage } : {}),
-          ...(entry.keywords !== undefined ? { keywords: entry.keywords } : {}),
-          ...(entry.version !== undefined ? { version: entry.version } : {}),
+          description: entry.description,
+          homepage: entry.homepage,
+          keywords: entry.keywords,
+          version: entry.version,
           source: resolveEntrySource(entry.source, opts.marketplaceUrl),
-          ...(installedInfo !== undefined ? { installed: installedInfo } : {}),
-          ...(updateAvailable ? { updateAvailable: true } : {}),
+          installed: installedInfo,
+          updateAvailable: updateAvailable ? true : undefined,
         };
       });
       reply.send(okEnvelope({ entries }, req.id));
