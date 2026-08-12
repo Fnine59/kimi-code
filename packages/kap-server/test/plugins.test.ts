@@ -238,6 +238,11 @@ describe('server-v2 /api/v1 plugins', () => {
       source: join(home!, 'no-such-plugin-dir'),
     });
     expect(missing.body.code).toBe(40409);
+    // Existing directory without a valid manifest → plugin.load_failed.
+    const noManifest = await mkdtemp(join(tmpdir(), 'kimi-no-manifest-'));
+    createdDirs.push(noManifest);
+    const unloadable = await call('POST', '/api/v1/plugins', { source: noManifest });
+    expect(unloadable.body.code).toBe(40001);
   });
 
   it('serves the marketplace catalog merged with live install state', async () => {

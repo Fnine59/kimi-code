@@ -565,8 +565,10 @@ export function registerPluginsRoutes(
 
 const PLUGIN_ERROR_MAP: Readonly<Record<string, ErrorCode>> = {
   [PluginErrors.codes.PLUGIN_NOT_FOUND]: ErrorCode.PLUGIN_NOT_FOUND,
-  // Client-fixable input mistakes (relative source, missing local path) keep
-  // their 4xx semantics instead of collapsing into a 50001.
+  // Client-fixable input mistakes (relative source, missing local path, an
+  // unloadable manifest at a valid location) keep their 4xx semantics
+  // instead of collapsing into a 50001.
+  [PluginErrors.codes.PLUGIN_LOAD_FAILED]: ErrorCode.VALIDATION_FAILED,
   [DomainErrorCodes.VALIDATION_FAILED]: ErrorCode.VALIDATION_FAILED,
   [DomainErrorCodes.FS_PATH_NOT_FOUND]: ErrorCode.FS_PATH_NOT_FOUND,
 };
