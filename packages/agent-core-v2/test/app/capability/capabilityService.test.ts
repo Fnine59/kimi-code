@@ -23,7 +23,7 @@ function fakeEntry(overrides: {
   pluginId?: string;
   supported?: boolean;
   detect?: CapabilityDetectResult;
-  install?: (report: CapabilityInstallReporter) => Promise<void>;
+  install?: (report: CapabilityInstallReporter) => Promise<string | undefined>;
 }): CapabilityEntry {
   return {
     id: overrides.id,
@@ -35,7 +35,7 @@ function fakeEntry(overrides: {
       Promise.resolve(
         overrides.detect ?? { steps: [{ id: 'plugin', state: 'ok' }] },
       ),
-    install: overrides.install ?? (() => Promise.resolve()),
+    install: overrides.install ?? (() => Promise.resolve(undefined)),
   };
 }
 
@@ -92,7 +92,7 @@ describe('CapabilityService', () => {
       description: 'fake',
       supported: true,
       detect: () => Promise.reject(new Error('probe timed out')),
-      install: () => Promise.resolve(),
+      install: () => Promise.resolve(undefined),
     };
     const service = fakeService([
       broken,
@@ -176,9 +176,9 @@ describe('CapabilityService', () => {
         id: 'kimi-cu',
         install: (report) => {
           report('download', 42);
-          return new Promise<void>((resolve) => {
+          return new Promise<string | undefined>((resolve) => {
             release = () => {
-              resolve();
+              resolve(undefined);
             };
           });
         },
@@ -213,6 +213,22 @@ describe('CapabilityService', () => {
     expect.unreachable('install never settled');
   });
 
+  it('surfaces an install note from the entry through progress', async () => {
+    const service = fakeService([
+      fakeEntry({
+        id: 'kimi-cu',
+        install: () => Promise.resolve('user-skill-migrated'),
+      }),
+    ]);
+    await service.installCapability('kimi-cu');
+    for (let i = 0; i < 50; i += 1) {
+      const status = await service.getCapability('kimi-cu');
+      if (!status.install.running) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect((await service.getCapability('kimi-cu')).install.note).toBe('user-skill-migrated');
+  });
+
   it('surfaces install errors through progress until the next attempt', async () => {
     let attempts = 0;
     const service = fakeService([
@@ -222,7 +238,7 @@ describe('CapabilityService', () => {
           attempts += 1;
           return attempts === 1
             ? Promise.reject(new Error('boom'))
-            : Promise.resolve();
+            : Promise.resolve(undefined);
         },
       }),
     ]);

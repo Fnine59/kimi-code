@@ -93,13 +93,13 @@ export class CapabilityService implements ICapabilityService {
     this.installProgress.set(entry.id, { running: true });
     void (async () => {
       try {
-        await entry.install((step, percent) => {
+        const note = await entry.install((step, percent) => {
           this.installProgress.set(
             entry.id,
             percent === undefined ? { running: true, step } : { running: true, step, percent },
           );
         });
-        this.installProgress.set(entry.id, { running: false });
+        this.installProgress.set(entry.id, { running: false, note });
       } catch (error) {
         const step = this.installProgress.get(entry.id)?.step;
         this.log.warn('capability install failed', {
