@@ -128,7 +128,11 @@ function semverGt(a: string, b: string): boolean {
  * returned source is directly installable.
  */
 function resolveEntrySource(source: string, marketplaceUrl: string): string {
-  if (/^https?:\/\//.test(source) || isAbsolute(source)) return source;
+  if (/^https?:\/\//.test(source)) return source;
+  // `file://` entry sources convert to filesystem paths up front — the
+  // install normalizer only accepts http(s) or absolute local paths.
+  if (source.startsWith('file://')) return fileURLToPath(source);
+  if (isAbsolute(source)) return source;
   if (/^https?:\/\//.test(marketplaceUrl)) {
     try {
       return new URL(source, marketplaceUrl).href;

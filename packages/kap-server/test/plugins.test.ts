@@ -244,7 +244,12 @@ describe('server-v2 /api/v1 plugins', () => {
     createdDirs.push(catalogDir);
     await writeFile(
       join(catalogDir, 'marketplace.json'),
-      JSON.stringify({ plugins: [{ id: 'local-plugin', source: './zips/local.zip' }] }),
+      JSON.stringify({
+        plugins: [
+          { id: 'local-plugin', source: './zips/local.zip' },
+          { id: 'file-url-plugin', source: 'file:///abs/plugins/file.zip' },
+        ],
+      }),
     );
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -268,6 +273,13 @@ describe('server-v2 /api/v1 plugins', () => {
         displayName: 'local-plugin',
         // Relative sources resolve against the catalog file's directory.
         source: join(catalogDir, 'zips', 'local.zip'),
+      },
+      {
+        id: 'file-url-plugin',
+        tier: 'third-party',
+        displayName: 'file-url-plugin',
+        // file:// sources convert to plain absolute paths (installable).
+        source: '/abs/plugins/file.zip',
       },
     ]);
   });
