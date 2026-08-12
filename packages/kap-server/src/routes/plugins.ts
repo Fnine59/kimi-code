@@ -95,7 +95,10 @@ const rawMarketplaceEntrySchema = z.preprocess(
     const normalized: Record<string, unknown> = { ...record };
     if (tier === undefined) delete normalized['tier'];
     else normalized['tier'] = tier;
+    // A source with no valid value or alias must fail validation (not slip
+    // through as whitespace): drop the key so the schema reports it missing.
     if (source !== undefined) normalized['source'] = source;
+    else delete normalized['source'];
     return normalized;
   },
   z.object({

@@ -256,6 +256,25 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(afterGh.body.data.entries.find((e) => e.id === 'gh-plugin')?.updateAvailable).toBe(true);
   });
 
+  it('rejects a catalog whose entry has no usable source', async () => {
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        if (url === CATALOG_URL) {
+          return new Response(
+            JSON.stringify({ plugins: [{ id: 'bad', source: '   ' }] }),
+            { status: 200 },
+          );
+        }
+        return realFetch(url as never, init);
+      }),
+    );
+    const { body } = await call('GET', '/api/v1/plugins/marketplace');
+    expect(body.code).toBe(50001);
+    expect(body.msg).toContain('invalid catalog');
+  });
+
   it('maps an unreachable marketplace to 50001', async () => {
     const realFetch = globalThis.fetch;
     vi.stubGlobal(
