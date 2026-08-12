@@ -402,6 +402,8 @@ describe('server-v2 /api/v1 plugins', () => {
     );
     expect(body.code).toBe(0);
     const datasource = body.data.entries.find((e) => e.id === 'kimi-datasource');
+    // Relative sources resolve against the fallback file, not the failed URL.
+    expect(datasource?.source.startsWith('http')).toBe(false);
     expect(datasource?.source.endsWith(join('plugins', 'official', 'kimi-datasource'))).toBe(true);
   });
 

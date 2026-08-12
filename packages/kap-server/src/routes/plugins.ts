@@ -277,10 +277,20 @@ function sourceCheckoutCatalogPath(): string | undefined {
  * A failed remote read falls back to the source checkout's catalog when one
  * exists (CLI parity).
  */
-async function readMarketplaceCatalog(opts: PluginsRouteOptions): Promise<unknown> {
+/**
+ * Read the raw marketplace catalog JSON plus the location it was actually
+ * read from — relative entry sources resolve against the latter (the
+ * source-checkout fallback serves local directory sources).
+ */
+async function readMarketplaceCatalog(
+  opts: PluginsRouteOptions,
+): Promise<{ raw: unknown; location: string }> {
   const location = opts.marketplaceUrl;
   if (!/^https?:\/\//.test(location)) {
-    return JSON.parse(await readFile(localCatalogPath(location), 'utf8'));
+    return {
+      raw: JSON.parse(await readFile(localCatalogPath(location), 'utf8')),
+      location,
+    };
   }
   const fetchImpl = opts.fetchImpl ?? fetch;
   try {
@@ -288,12 +298,12 @@ async function readMarketplaceCatalog(opts: PluginsRouteOptions): Promise<unknow
       signal: AbortSignal.timeout(MARKETPLACE_FETCH_TIMEOUT_MS),
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return await resp.json();
+    return { raw: await resp.json(), location };
   } catch (error) {
     const fallback =
       opts.marketplaceIsDefault === true ? sourceCheckoutCatalogPath() : undefined;
     if (fallback === undefined) throw error;
-    return JSON.parse(await readFile(fallback, 'utf8'));
+    return { raw: JSON.parse(await readFile(fallback, 'utf8')), location: fallback };
   }
 }
 
@@ -328,9 +338,9 @@ export function registerPluginsRoutes(
       operationId: 'listPluginMarketplace',
     },
     async (req, reply) => {
-      let raw: unknown;
+      let catalog: { raw: unknown; location: string };
       try {
-        raw = await readMarketplaceCatalog(opts);
+        catalog = await readMarketplaceCatalog(opts);
       } catch (error) {
         reply.send(
           errEnvelope(
@@ -341,7 +351,7 @@ export function registerPluginsRoutes(
         );
         return;
       }
-      const parsed = rawMarketplaceSchema.safeParse(raw);
+      const parsed = rawMarketplaceSchema.safeParse(catalog.raw);
       if (!parsed.success) {
         reply.send(
           errEnvelope(ErrorCode.INTERNAL_ERROR, 'Plugin marketplace returned an invalid catalog', req.id),
@@ -353,7 +363,7 @@ export function registerPluginsRoutes(
       // lookups for bare GitHub repos ride the shared per-call timeout).
       const resolved = await Promise.all(
         parsed.data.plugins.map(async (entry) => {
-          const source = resolveEntrySource(entry.source, opts.marketplaceUrl);
+          const source = resolveEntrySource(entry.source, catalog.location);
           // Entries may omit `version`: derive it from a GitHub ref tail, or
           // look up the latest release of a bare repo source (CLI parity).
           const version =
