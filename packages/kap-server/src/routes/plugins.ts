@@ -43,6 +43,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { gt, valid } from 'semver';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -175,20 +176,10 @@ const rawMarketplaceSchema = z.object({
   plugins: z.array(rawMarketplaceEntrySchema),
 });
 
-/** Strict `x.y.z` numeric comparison (no prerelease); avoids a semver dep. */
+/** CLI-parity update check: both sides must be valid semver (`v` prefix and
+ *  prerelease tags accepted), catalog strictly greater. */
 function semverGt(a: string, b: string): boolean {
-  const parse = (v: string): number[] | undefined => {
-    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
-    return m === null ? undefined : [Number(m[1]), Number(m[2]), Number(m[3])];
-  };
-  const pa = parse(a);
-  const pb = parse(b);
-  if (pa === undefined || pb === undefined) return false;
-  for (let i = 0; i < 3; i += 1) {
-    if (pa[i]! > pb[i]!) return true;
-    if (pa[i]! < pb[i]!) return false;
-  }
-  return false;
+  return valid(a) !== null && valid(b) !== null && gt(a, b);
 }
 
 /**
@@ -225,7 +216,7 @@ function expandHome(input: string): string {
 
 /**
  * Derive a version from a GitHub release/tree/commit source (same shapes as
- * the CLI parser; strict `x.y.z`, no prerelease — mirrors `semverGt`).
+ * the CLI parser; validity follows `semver.valid`).
  */
 function deriveVersionFromGithubSource(source: string): string | undefined {
   let url: URL;
@@ -246,7 +237,7 @@ function deriveVersionFromGithubSource(source: string): string | undefined {
     decoded = ref;
   }
   const candidate = decoded.replace(/^v/i, '');
-  return /^(\d+)\.(\d+)\.(\d+)$/.test(candidate) ? candidate : undefined;
+  return valid(candidate) !== null ? candidate : undefined;
 }
 
 /**
@@ -288,7 +279,7 @@ async function resolveLatestGithubRelease(
       decoded = tag;
     }
     const candidate = decoded.replace(/^v/i, '');
-    return /^(\d+)\.(\d+)\.(\d+)$/.test(candidate) ? candidate : undefined;
+    return valid(candidate) !== null ? candidate : undefined;
   } catch {
     return undefined;
   }

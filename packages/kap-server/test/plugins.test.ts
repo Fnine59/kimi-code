@@ -41,7 +41,8 @@ const CATALOG = {
       id: 'demo-plugin',
       tier: 'official',
       displayName: 'Demo Plugin',
-      version: '2.0.0',
+      // A `v`-prefixed catalog version still drives the update check.
+      version: 'v2.0.0',
       source: 'https://cdn.example.test/demo.zip',
     },
     {
