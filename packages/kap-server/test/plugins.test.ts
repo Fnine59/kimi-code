@@ -48,6 +48,12 @@ const CATALOG = {
       displayName: 'Third Party',
       source: 'https://github.com/example/third',
     },
+    {
+      // Catalog-relative source (the production CDN catalog's shape).
+      id: 'relative-plugin',
+      displayName: 'Relative',
+      source: './plugins/relative.zip',
+    },
   ],
 };
 
@@ -176,14 +182,18 @@ describe('server-v2 /api/v1 plugins', () => {
 
   it('serves the marketplace catalog merged with live install state', async () => {
     const before = await call<{
-      entries: { id: string; tier: string; installed?: { version?: string } }[];
+      entries: { id: string; tier: string; source: string; installed?: { version?: string } }[];
     }>('GET', '/api/v1/plugins/marketplace');
     expect(before.body.code).toBe(0);
     expect(before.body.data.entries.map((e) => [e.id, e.tier])).toEqual([
       ['demo-plugin', 'official'],
       ['third-party-plugin', 'third-party'],
+      ['relative-plugin', 'third-party'],
     ]);
     expect(before.body.data.entries[0]?.installed).toBeUndefined();
+    // Catalog-relative sources resolve against the catalog URL.
+    const relative = before.body.data.entries.find((e) => e.id === 'relative-plugin');
+    expect(relative?.source).toBe('http://marketplace.test/plugins/relative.zip');
 
     // Install an older version than the catalog → updateAvailable.
     const source = await makePluginDir('demo-plugin', '1.0.0');

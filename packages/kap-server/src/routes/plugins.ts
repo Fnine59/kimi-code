@@ -12,7 +12,9 @@
  * fetched on demand from the configured URL (`pluginMarketplaceUrl` server
  * option, env `KIMI_CODE_PLUGIN_MARKETPLACE_URL`, default the production
  * catalog) and merged with the live install state — install status is always
- * detected from the local records, never from the catalog.
+ * detected from the local records, never from the catalog. Catalog-relative
+ * sources (`./official/*.zip`) are resolved against the catalog URL so the
+ * returned `source` is directly installable.
  *
  * **Action suffix**: `:enable` / `:disable` / `:remove` via `parseActionSuffix`
  * (bare ids rejected).
@@ -101,6 +103,22 @@ function semverGt(a: string, b: string): boolean {
   return false;
 }
 
+/**
+ * Catalog sources may be relative to the catalog URL (the production CDN
+ * catalog uses `./official/*.zip`). Clients hand `source` back to
+ * `POST /plugins`, whose normalizer rejects non-absolute paths — resolve
+ * against the catalog URL so every returned source is directly installable.
+ */
+function resolveEntrySource(source: string, marketplaceUrl: string): string {
+  if (/^https?:\/\//.test(source)) return source;
+  if (!/^https?:\/\//.test(marketplaceUrl)) return source;
+  try {
+    return new URL(source, marketplaceUrl).href;
+  } catch {
+    return source;
+  }
+}
+
 export interface PluginsRouteOptions {
   /** Resolved catalog URL (server option / env already applied by start.ts). */
   readonly marketplaceUrl: string;
@@ -173,7 +191,7 @@ export function registerPluginsRoutes(
           ...(entry.homepage !== undefined ? { homepage: entry.homepage } : {}),
           ...(entry.keywords !== undefined ? { keywords: entry.keywords } : {}),
           ...(entry.version !== undefined ? { version: entry.version } : {}),
-          source: entry.source,
+          source: resolveEntrySource(entry.source, opts.marketplaceUrl),
           ...(installedInfo !== undefined ? { installed: installedInfo } : {}),
           ...(updateAvailable ? { updateAvailable: true } : {}),
         };
