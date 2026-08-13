@@ -1,0 +1,650 @@
+/**
+ * Scenario: the unified MCP management plane on KimiCore — the registry-backed
+ * global view (global + plugin sources, read-only gating, effective configs),
+ * the extended interfaces (inline-config probe, session-level add), and the
+ * push of config / plugin / credential changes into live sessions.
+ *
+ * Run with `pnpm --filter @moonshot-ai/agent-core exec vitest run test/rpc/mcp-rpc.test.ts`.
+ */
+
+import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
+import type { AddressInfo as HttpAddress } from 'node:net';
+import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'pathe';
+import { setTimeout as sleep } from 'node:timers/promises';
+
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+
+import type { McpOAuthService } from '../../src/mcp/oauth';
+import type { ApprovalResponse, CoreAPI, SDKAPI } from '../../src/rpc';
+import { createRPC } from '../../src/rpc';
+import { KimiCore } from '../../src/rpc/core-impl';
+
+const STDIO_FIXTURE = join(import.meta.dirname, '../mcp/fixtures/mock-stdio-server.mjs');
+
+const cleanups: Array<() => Promise<void> | void> = [];
+const cores: KimiCore[] = [];
+afterEach(async () => {
+  // Sessions hold keep-alive MCP connections; they must go down before the
+  // fixture servers close, and before any token endpoints disappear.
+  for (const core of cores.splice(0)) {
+    for (const sessionId of [...core.sessions.keys()]) {
+      await core.closeSession({ sessionId }).catch(() => undefined);
+    }
+  }
+  while (cleanups.length > 0) {
+    await cleanups.pop()?.();
+  }
+});
+
+async function writeJson(file: string, value: unknown): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify(value, null, 2), 'utf8');
+}
+
+function baseModelConfig(): string {
+  return `default_model = "default-mock"
+
+[providers.test]
+type = "kimi"
+api_key = "test-key"
+
+[models."default-mock"]
+provider = "test"
+model = "default-mock"
+max_context_size = 100000
+`;
+}
+
+async function makePlugin(name: string, mcpServers: Record<string, unknown>): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), `kimi-mcp-rpc-plugin-`));
+  await writeJson(join(root, 'kimi.plugin.json'), { name, mcpServers });
+  return realpath(root);
+}
+
+interface CoreFixture {
+  readonly core: KimiCore;
+  readonly rpc: Awaited<ReturnType<ReturnType<typeof createRPC<CoreAPI, SDKAPI>>[1]>>;
+  readonly home: string;
+  readonly workDir: string;
+}
+
+async function makeCore(seed?: (home: string) => Promise<void>): Promise<CoreFixture> {
+  const tmp = await realpath(await mkdtemp(join(tmpdir(), 'kimi-mcp-rpc-')));
+  const home = join(tmp, 'home');
+  const workDir = join(tmp, 'work');
+  await mkdir(home, { recursive: true });
+  await mkdir(workDir, { recursive: true });
+  await writeFile(join(home, 'config.toml'), baseModelConfig());
+  await seed?.(home);
+
+  const [coreRpc, sdkRpc] = createRPC<CoreAPI, SDKAPI>();
+  const core = new KimiCore(coreRpc, { homeDir: home });
+  cores.push(core);
+  const rpc = await sdkRpc({
+    emitEvent: vi.fn(),
+    requestApproval: vi.fn(async (): Promise<ApprovalResponse> => ({ decision: 'rejected' })),
+    requestQuestion: vi.fn(async () => null),
+    toolCall: vi.fn(async () => ({ output: '' })),
+  });
+  return { core, rpc, home, workDir };
+}
+
+/** In-process MCP HTTP server, optionally gated behind a static bearer token. */
+async function startMcpHttpServer(
+  options: { readonly bearerToken?: string; readonly oauthRejecting?: boolean } = {},
+): Promise<{
+  readonly url: string;
+}> {
+  // Stateless per-request transports: reconnect cycles (plugin sync, OAuth
+  // reconnect) must each get a fresh server-side session.
+  const httpServer: HttpServer = createHttpServer((req, res) => {
+    const baseUrl = `http://127.0.0.1:${(httpServer.address() as HttpAddress).port}`;
+    if (options.oauthRejecting === true) {
+      // Minimal OAuth discovery + a token endpoint that always rejects, so a
+      // stale grant's refresh attempt fails deterministically and the client
+      // lands on needs-auth instead of a generic connection failure.
+      if (req.url === '/.well-known/oauth-protected-resource') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ resource: `${baseUrl}/mcp`, authorization_servers: [baseUrl] }));
+        return;
+      }
+      if (req.url === '/.well-known/oauth-authorization-server') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            issuer: baseUrl,
+            authorization_endpoint: `${baseUrl}/authorize`,
+            token_endpoint: `${baseUrl}/token`,
+            registration_endpoint: `${baseUrl}/register`,
+            response_types_supported: ['code'],
+            grant_types_supported: ['authorization_code', 'refresh_token'],
+            code_challenge_methods_supported: ['S256'],
+            token_endpoint_auth_methods_supported: ['none'],
+          }),
+        );
+        return;
+      }
+      if (req.url === '/register' && req.method === 'POST') {
+        void (async () => {
+          let body = '';
+          for await (const chunk of req) body += chunk;
+          // Echo the request metadata back: the SDK validates the full client
+          // information (redirect_uris must come back).
+          res.writeHead(201, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ client_id: 'mgmt-fixture-client', ...JSON.parse(body) }));
+        })().catch(() => res.destroy());
+        return;
+      }
+      if (req.url === '/token' && req.method === 'POST') {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_grant' }));
+        return;
+      }
+    }
+    if (
+      options.bearerToken !== undefined &&
+      req.headers.authorization !== `Bearer ${options.bearerToken}`
+    ) {
+      res.writeHead(401, {
+        'content-type': 'application/json',
+        'www-authenticate': `Bearer realm="mcp", resource_metadata="${baseUrl}/.well-known/oauth-protected-resource"`,
+      });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    void (async () => {
+      const mcpServer = new McpServer({ name: 'mgmt-fixture', version: '0.0.1' });
+      mcpServer.registerTool(
+        'echo',
+        { description: 'Echoes text', inputSchema: { text: z.string() } },
+        ({ text }) => ({ content: [{ type: 'text', text }] }),
+      );
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      await mcpServer.connect(transport);
+      res.on('close', () => {
+        void transport.close();
+        void mcpServer.close();
+      });
+      await transport.handleRequest(req, res);
+    })().catch(() => res.destroy());
+  });
+  await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+  cleanups.push(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        httpServer.closeAllConnections();
+        httpServer.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      }),
+  );
+  const port = (httpServer.address() as HttpAddress).port;
+  return { url: `http://127.0.0.1:${port}/mcp` };
+}
+
+/** The core's process-wide OAuth service (private; tests reach in on purpose). */
+function coreOAuth(core: KimiCore): McpOAuthService {
+  return (core as unknown as { mcpOAuth: McpOAuthService }).mcpOAuth;
+}
+
+describe('KimiCore unified MCP management plane', () => {
+  it('lists global and plugin servers in one registry-backed view', async () => {
+    const { core, home } = await makeCore();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: { fs: { command: 'fs-mcp' } },
+    });
+    const pluginRoot = await makePlugin('demo', {
+      docs: { transport: 'http', url: 'https://example.com/mcp' },
+    });
+    await core.installPlugin({ source: pluginRoot });
+
+    const list = await core.listGlobalMcpServers({});
+    const byName = new Map(list.map((entry) => [entry.name, entry]));
+    expect(byName.get('fs')).toMatchObject({
+      source: 'global',
+      mutable: true,
+      origin: join(home, 'mcp.json'),
+    });
+    expect(byName.get('plugin-demo:docs')).toMatchObject({
+      source: 'plugin',
+      mutable: false,
+      origin: 'demo',
+      plugin: { id: 'demo', name: 'docs' },
+      url: 'https://example.com/mcp',
+    });
+
+    const got = await core.getGlobalMcpServer({ name: 'plugin-demo:docs' });
+    expect(got).toMatchObject({ source: 'plugin', url: 'https://example.com/mcp' });
+    await expect(core.getGlobalMcpServer({ name: 'missing' })).rejects.toMatchObject({
+      code: 'mcp.server_not_found',
+    });
+  });
+
+  it('waits for the initial plugin load before registry-backed management calls', async () => {
+    const pluginRoot = await makePlugin('demo', {
+      docs: { transport: 'http', url: 'https://example.com/mcp' },
+    });
+    const { core } = await makeCore(async (home) => {
+      await writeJson(join(home, 'plugins', 'installed.json'), {
+        version: 1,
+        plugins: [
+          {
+            id: 'demo',
+            root: pluginRoot,
+            source: 'local-path',
+            enabled: true,
+            installedAt: new Date().toISOString(),
+          },
+        ],
+      });
+    });
+
+    // Called right after construction, while the constructor-kicked plugin
+    // load is still in flight: the management view must wait for it and list
+    // the plugin server, and a shadowing user-level write must be rejected.
+    const list = await core.listGlobalMcpServers({});
+    expect(list.map((entry) => entry.name)).toContain('plugin-demo:docs');
+    await expect(
+      core.addGlobalMcpServer({
+        server: { name: 'plugin-demo:docs', transport: 'http', url: 'https://example.com/v2' },
+      }),
+    ).rejects.toMatchObject({ code: 'request.invalid' });
+  });
+
+  it('surfaces the initial plugin load failure in registry-backed management calls', async () => {
+    const { core } = await makeCore(async (home) => {
+      await mkdir(join(home, 'plugins'), { recursive: true });
+      await writeFile(join(home, 'plugins', 'installed.json'), '{not-json', 'utf8');
+    });
+
+    await expect(core.listGlobalMcpServers({})).rejects.toMatchObject({
+      code: 'plugin.load_failed',
+    });
+  });
+
+  it('rejects mutations of read-only entries and keeps store errors for global ones', async () => {
+    const { core } = await makeCore();
+    const pluginRoot = await makePlugin('demo', {
+      docs: { transport: 'http', url: 'https://example.com/mcp' },
+    });
+    await core.installPlugin({ source: pluginRoot });
+
+    await expect(
+      core.updateGlobalMcpServer({
+        server: { name: 'plugin-demo:docs', transport: 'http', url: 'https://example.com/v2' },
+      }),
+    ).rejects.toMatchObject({ code: 'request.invalid', message: expect.stringContaining('plugin') });
+    await expect(core.removeGlobalMcpServer({ name: 'plugin-demo:docs' })).rejects.toMatchObject({
+      code: 'request.invalid',
+    });
+    await expect(
+      core.addGlobalMcpServer({
+        server: { name: 'plugin-demo:docs', transport: 'http', url: 'https://example.com/v2' },
+      }),
+    ).rejects.toMatchObject({ code: 'request.invalid' });
+    await expect(
+      core.updateGlobalMcpServer({
+        server: { name: 'unknown', transport: 'http', url: 'https://example.com/mcp' },
+      }),
+    ).rejects.toMatchObject({ code: 'mcp.server_not_found' });
+  });
+
+  it('tests an inline unsaved config and a plugin server by name', async () => {
+    const { core } = await makeCore();
+    const inline = await core.testGlobalMcpServer({
+      server: {
+        name: 'unsaved-probe',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [STDIO_FIXTURE],
+      },
+    });
+    expect(inline.success).toBe(true);
+    expect(inline.output).toContain('Available tools: 3');
+
+    const server = await startMcpHttpServer();
+    const pluginRoot = await makePlugin('demo', {
+      api: { transport: 'http', url: server.url },
+    });
+    await core.installPlugin({ source: pluginRoot });
+    const byName = await core.testGlobalMcpServer({ name: 'plugin-demo:api' });
+    expect(byName.success).toBe(true);
+    expect(byName.output).toContain('echo');
+
+    await expect(core.testGlobalMcpServer({})).rejects.toMatchObject({
+      code: 'request.invalid',
+    });
+  }, 20000);
+
+  it('pushes global add / update / remove into live sessions', async () => {
+    const { core, rpc, workDir } = await makeCore();
+    const created = await rpc.createSession({ workDir, model: 'default-mock' });
+    const session = core.sessions.get(created.id)!;
+
+    await core.addGlobalMcpServer({
+      server: {
+        name: 'working',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [STDIO_FIXTURE],
+      },
+    });
+    expect(session.mcp.get('working')).toMatchObject({ status: 'connected', source: 'global' });
+
+    await core.updateGlobalMcpServer({
+      server: {
+        name: 'working',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [STDIO_FIXTURE, '--updated'],
+      },
+    });
+    expect(session.mcp.get('working')?.config).toMatchObject({ args: [STDIO_FIXTURE, '--updated'] });
+    expect(session.mcp.get('working')?.status).toBe('connected');
+
+    await core.removeGlobalMcpServer({ name: 'working' });
+    expect(session.mcp.get('working')).toBeUndefined();
+  }, 30000);
+
+  it('reconciles plugin MCP servers in live sessions on install / disable / enable', async () => {
+    const { core, rpc, workDir } = await makeCore();
+    const created = await rpc.createSession({ workDir, model: 'default-mock' });
+    const session = core.sessions.get(created.id)!;
+
+    const server = await startMcpHttpServer();
+    const pluginRoot = await makePlugin('demo', {
+      api: { transport: 'http', url: server.url },
+    });
+    await core.installPlugin({ source: pluginRoot });
+    expect(session.mcp.get('plugin-demo:api')).toMatchObject({
+      status: 'connected',
+      source: 'plugin',
+    });
+
+    await core.setPluginEnabled({ id: 'demo', enabled: false });
+    expect(session.mcp.get('plugin-demo:api')).toBeUndefined();
+
+    await core.setPluginEnabled({ id: 'demo', enabled: true });
+    expect(session.mcp.get('plugin-demo:api')).toMatchObject({
+      status: 'connected',
+      source: 'plugin',
+    });
+
+    // A disabled plugin server can no longer be reconnected into the session.
+    await core.setPluginEnabled({ id: 'demo', enabled: false });
+    await expect(rpc.reconnectMcpServer({ sessionId: created.id, name: 'plugin-demo:api' })).rejects.toMatchObject({
+      code: 'mcp.server_not_found',
+    });
+  }, 30000);
+
+  it('addSessionMcpServer connects a caller entry, and persists on request', async () => {
+    const { core, rpc, home, workDir } = await makeCore();
+    const created = await rpc.createSession({ workDir, model: 'default-mock' });
+
+    const caller = await rpc.addSessionMcpServer({
+      sessionId: created.id,
+      server: {
+        name: 'temp',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [STDIO_FIXTURE],
+      },
+    });
+    expect(caller).toMatchObject({ name: 'temp', status: 'connected', source: 'caller' });
+    await expect(core.listGlobalMcpServers({})).resolves.toEqual([]);
+
+    const persisted = await rpc.addSessionMcpServer({
+      sessionId: created.id,
+      server: {
+        name: 'kept',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [STDIO_FIXTURE],
+      },
+      persist: true,
+    });
+    expect(persisted).toMatchObject({ name: 'kept', status: 'connected', source: 'global' });
+    await expect(core.getGlobalMcpServer({ name: 'kept' })).resolves.toMatchObject({
+      source: 'global',
+      mutable: true,
+      origin: join(home, 'mcp.json'),
+    });
+  }, 30000);
+
+  it('reconnects a needs-auth session entry when credentials land', async () => {
+    const server = await startMcpHttpServer({ bearerToken: 'good-token' });
+    const { core, rpc, home, workDir } = await makeCore();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: { gated: { transport: 'http', url: server.url } },
+    });
+    const created = await rpc.createSession({ workDir, model: 'default-mock' });
+    const session = core.sessions.get(created.id)!;
+    await session.mcp.waitForInitialLoad();
+    expect(session.mcp.get('gated')?.status).toBe('needs-auth');
+
+    // A login completing anywhere in the process (management plane or the
+    // synthetic auth tool) must reach the live session by itself.
+    await coreOAuth(core).getProvider('gated', server.url).saveTokens({
+      access_token: 'good-token',
+      token_type: 'Bearer',
+    });
+    for (let i = 0; i < 100; i++) {
+      if (session.mcp.get('gated')?.status === 'connected') break;
+      await sleep(50);
+    }
+    expect(session.mcp.get('gated')?.status).toBe('connected');
+  }, 30000);
+
+  it('flips a connected session entry back to needs-auth when credentials are reset', async () => {
+    const server = await startMcpHttpServer({ bearerToken: 'good-token' });
+    const { core, rpc, home, workDir } = await makeCore();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: { gated: { transport: 'http', url: server.url } },
+    });
+    await coreOAuth(core).getProvider('gated', server.url).saveTokens({
+      access_token: 'good-token',
+      token_type: 'Bearer',
+    });
+    const created = await rpc.createSession({ workDir, model: 'default-mock' });
+    const session = core.sessions.get(created.id)!;
+    await session.mcp.waitForInitialLoad();
+    expect(session.mcp.get('gated')?.status).toBe('connected');
+
+    await core.resetGlobalMcpServerAuth({ name: 'gated' });
+    for (let i = 0; i < 100; i++) {
+      if (session.mcp.get('gated')?.status === 'needs-auth') break;
+      await sleep(50);
+    }
+    expect(session.mcp.get('gated')?.status).toBe('needs-auth');
+  }, 30000);
+
+  it('classifies expired stored credentials as oauth-expired', async () => {
+    const { core, home } = await makeCore();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        stale: { transport: 'http', url: 'https://stale.example.test/mcp', auth: 'oauth' },
+        refreshable: { transport: 'http', url: 'https://refresh.example.test/mcp', auth: 'oauth' },
+        fresh: { transport: 'http', url: 'https://fresh.example.test/mcp', auth: 'oauth' },
+      },
+    });
+    const oauth = coreOAuth(core);
+    await oauth.getProvider('stale', 'https://stale.example.test/mcp').saveTokens({
+      access_token: 'dead',
+      token_type: 'Bearer',
+      expires_in: -60,
+    });
+    await oauth.getProvider('refreshable', 'https://refresh.example.test/mcp').saveTokens({
+      access_token: 'old',
+      refresh_token: 'still-good',
+      token_type: 'Bearer',
+      expires_in: -60,
+    });
+    await oauth.getProvider('fresh', 'https://fresh.example.test/mcp').saveTokens({
+      access_token: 'good',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    });
+
+    const statuses = await core.listGlobalMcpServerAuthStatuses({});
+    expect(statuses).toEqual([
+      { name: 'stale', authStatus: 'oauth-expired' },
+      { name: 'refreshable', authStatus: 'oauth-authorized' },
+      { name: 'fresh', authStatus: 'oauth-authorized' },
+    ]);
+  });
+
+  it('inspects global and plugin servers with locators and real connection states', async () => {
+    const gated = await startMcpHttpServer({ bearerToken: 'good-token', oauthRejecting: true });
+    const plain = await startMcpHttpServer();
+    const { core, home } = await makeCore();
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: {
+        plain: { transport: 'http', url: plain.url },
+        stale: { transport: 'http', url: gated.url, auth: 'oauth' },
+      },
+    });
+    const pluginRoot = await makePlugin('demo', {
+      api: { transport: 'http', url: plain.url },
+    });
+    await core.installPlugin({ source: pluginRoot });
+    // A stored grant whose refresh is rejected (invalid_grant) classifies as
+    // expired after the probe, distinct from never-logged-in.
+    await coreOAuth(core).getProvider('stale', gated.url).saveTokens({
+      access_token: 'wrong-token',
+      refresh_token: 'dead-refresh-token',
+      token_type: 'Bearer',
+    });
+
+    const inspections = await core.inspectAppMcpServers({});
+    const byId = new Map(inspections.map((server) => [server.serverId, server]));
+
+    expect(byId.get('global:plain')).toMatchObject({
+      locator: { source: 'global', name: 'plain' },
+      runtimeName: 'plain',
+      origin: 'global',
+      editable: true,
+      enabled: true,
+      authStatus: 'not-applicable',
+      canonicalUrl: plain.url,
+    });
+    expect(byId.get('global:stale')).toMatchObject({
+      authStatus: 'oauth-expired',
+      editable: true,
+    });
+    expect(byId.get('plugin:demo:api')).toMatchObject({
+      locator: { source: 'plugin', pluginId: 'demo', serverName: 'api' },
+      runtimeName: 'plugin-demo:api',
+      origin: 'plugin',
+      editable: false,
+      enabled: true,
+      authStatus: 'not-applicable',
+    });
+
+    // Targets narrow the inspection; unknown locators reject.
+    const targeted = await core.inspectAppMcpServers({
+      targets: [{ source: 'plugin', pluginId: 'demo', serverName: 'api' }],
+    });
+    expect(targeted).toHaveLength(1);
+    expect(targeted[0]?.serverId).toBe('plugin:demo:api');
+    await expect(
+      core.inspectAppMcpServers({ targets: [{ source: 'global', name: 'missing' }] }),
+    ).rejects.toMatchObject({ code: 'mcp.server_not_found' });
+  }, 20000);
+
+  it('marks a runtime-name collision as unavailable instead of probing it', async () => {
+    const plain = await startMcpHttpServer();
+    const { core, home } = await makeCore();
+    const pluginRoot = await makePlugin('demo', {
+      api: { transport: 'http', url: plain.url },
+    });
+    await core.installPlugin({ source: pluginRoot });
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: { 'plugin-demo:api': { transport: 'http', url: plain.url } },
+    });
+
+    const targeted = await core.inspectAppMcpServers({
+      targets: [{ source: 'plugin', pluginId: 'demo', serverName: 'api' }],
+    });
+    expect(targeted[0]).toMatchObject({
+      runtimeName: 'plugin-demo:api',
+      authStatus: 'unavailable',
+      error: 'MCP runtime name "plugin-demo:api" is not unique',
+    });
+    // Both sides of the collision stay visible in the catalog.
+    const all = await core.inspectAppMcpServers({});
+    expect(all.filter((server) => server.runtimeName === 'plugin-demo:api')).toHaveLength(2);
+  }, 20000);
+
+  it('keeps a project-layer shadow when the user-level entry changes', async () => {
+    const { core, rpc, home, workDir } = await makeCore();
+    // workDir doubles as the repo root: the project-root `.mcp.json` shadows
+    // the user-level entry with the same name.
+    await writeJson(join(workDir, '.git', 'keep'), {});
+    await writeJson(join(workDir, '.mcp.json'), {
+      mcpServers: {
+        shadowed: { command: process.execPath, args: [STDIO_FIXTURE, '--project'] },
+      },
+    });
+    await writeJson(join(home, 'mcp.json'), {
+      mcpServers: { shadowed: { command: '/this/path/does/not/exist/anywhere' } },
+    });
+    const created = await rpc.createSession({ workDir, model: 'default-mock' });
+    const session = core.sessions.get(created.id)!;
+    await session.mcp.waitForInitialLoad();
+    // The effective config comes from the project layer.
+    expect(session.mcp.get('shadowed')).toMatchObject({ status: 'connected', source: 'global' });
+    expect(session.mcp.get('shadowed')?.config).toMatchObject({
+      args: [STDIO_FIXTURE, '--project'],
+    });
+
+    // A user-level edit must not clobber the project-layer shadow.
+    await core.updateGlobalMcpServer({
+      server: {
+        name: 'shadowed',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [STDIO_FIXTURE, '--user'],
+      },
+    });
+    expect(session.mcp.get('shadowed')).toMatchObject({
+      status: 'connected',
+      config: { args: [STDIO_FIXTURE, '--project'] },
+    });
+
+    // Removing the user-level entry keeps the shadow running as well.
+    await core.removeGlobalMcpServer({ name: 'shadowed' });
+    expect(session.mcp.get('shadowed')?.status).toBe('connected');
+  }, 30000);
+
+  it('drives OAuth RPCs by locator, including plugin servers', async () => {
+    const { core } = await makeCore();
+    const pluginRoot = await makePlugin('demo', {
+      api: { transport: 'http', url: 'https://example.com/mcp', auth: 'oauth' },
+    });
+    await core.installPlugin({ source: pluginRoot });
+    const locator = { source: 'plugin', pluginId: 'demo', serverName: 'api' } as const;
+
+    // Reset is a no-network invalidate and works for plugin servers.
+    await expect(core.resetMcpServerAuth({ locator })).resolves.toBeUndefined();
+    // The legacy name-based variant resolves through the registry too.
+    await expect(
+      core.resetGlobalMcpServerAuth({ name: 'plugin-demo:api' }),
+    ).resolves.toBeUndefined();
+    await expect(
+      core.beginMcpServerAuth({ locator: { source: 'global', name: 'missing' } }),
+    ).rejects.toMatchObject({ code: 'mcp.server_not_found' });
+    await expect(core.cancelMcpServerAuth({ flowId: 'unknown-flow' })).resolves.toBeUndefined();
+    await expect(core.completeMcpServerAuth({ flowId: 'unknown-flow' })).rejects.toMatchObject({
+      code: 'request.invalid',
+    });
+  }, 20000);
+});

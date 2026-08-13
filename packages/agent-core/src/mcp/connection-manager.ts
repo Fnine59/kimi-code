@@ -11,6 +11,7 @@ import { SseMcpClient } from './client-sse';
 import type { UnexpectedCloseReason } from './client-shared';
 import { StdioMcpClient } from './client-stdio';
 import type { McpOAuthService } from './oauth';
+import type { McpRegistryEntry, McpServerSource } from './registry';
 import { assertMcpInputSchema, type MCPClient, type MCPToolDefinition } from './types';
 
 export type McpServerStatus = 'pending' | 'connected' | 'failed' | 'disabled' | 'needs-auth';
@@ -21,11 +22,19 @@ export interface McpServerEntry {
   readonly status: McpServerStatus;
   readonly toolCount: number;
   readonly error?: string;
+  /**
+   * Where the entry's config came from. `undefined` only for entries created
+   * before source tracking (tests that construct the manager directly).
+   */
+  readonly source?: McpServerSource;
+  /** The effective config the entry is running (or last failed) with. */
+  readonly config: McpServerConfig;
 }
 
 interface InternalEntry {
   readonly name: string;
-  readonly config: McpServerConfig;
+  config: McpServerConfig;
+  source?: McpServerSource;
   attemptId: number;
   status: McpServerStatus;
   tools?: readonly Tool[];
@@ -98,6 +107,16 @@ export interface McpConnectionManagerOptions {
    *    drives the browser flow through the synthetic auth tool.
    */
   readonly oauthService?: McpOAuthService;
+  /**
+   * Re-resolves a server's current effective config from the unified registry
+   * (wired by KimiCore, keyed to the session workDir). Powers config-aware
+   * reconnects: a name-only {@link reconnect} picks up config-file edits and
+   * plugin reloads instead of reusing the boot-time snapshot, and reconnecting
+   * a server that is no longer configured fails explicitly instead of
+   * resurrecting a stale snapshot. Returning `undefined` means "not configured
+   * anywhere".
+   */
+  readonly configResolver?: (name: string) => Promise<McpRegistryEntry | undefined>;
   /**
    * Parent logger. Defaults to the global `log`; Session passes its own
    * `session.log` so MCP events land in the session log too.
@@ -218,11 +237,14 @@ export class McpConnectionManager {
     };
   }
 
-  connectAll(configs: Record<string, McpServerConfig>): Promise<void> {
+  connectAll(
+    configs: Record<string, McpServerConfig>,
+    sources?: Record<string, McpServerSource>,
+  ): Promise<void> {
     const attemptId = ++this.initialLoadAttemptId;
     this.initialLoadStartedAt = Date.now();
     this.initialLoadFinishedAt = undefined;
-    const initialLoad = this.connectAllNow(configs).finally(() => {
+    const initialLoad = this.connectAllNow(configs, sources).finally(() => {
       if (this.initialLoadAttemptId === attemptId) {
         this.initialLoadFinishedAt = Date.now();
       }
@@ -231,7 +253,7 @@ export class McpConnectionManager {
     return initialLoad;
   }
 
-  async connect(name: string, config: McpServerConfig): Promise<void> {
+  async connect(name: string, config: McpServerConfig, source?: McpServerSource): Promise<void> {
     const previous = this.entries.get(name);
     if (previous !== undefined) {
       await this.closeClient(previous);
@@ -240,6 +262,7 @@ export class McpConnectionManager {
     const entry: InternalEntry = {
       name,
       config,
+      source: source ?? previous?.source,
       attemptId: 0,
       status: disabled ? 'disabled' : 'pending',
     };
@@ -276,13 +299,17 @@ export class McpConnectionManager {
     return Math.max(0, endedAt - this.initialLoadStartedAt);
   }
 
-  private async connectAllNow(configs: Record<string, McpServerConfig>): Promise<void> {
+  private async connectAllNow(
+    configs: Record<string, McpServerConfig>,
+    sources?: Record<string, McpServerSource>,
+  ): Promise<void> {
     const tasks: Promise<unknown>[] = [];
     for (const [name, config] of Object.entries(configs)) {
       const disabled = config.enabled === false;
       const entry: InternalEntry = {
         name,
         config,
+        source: sources?.[name],
         attemptId: 0,
         status: disabled ? 'disabled' : 'pending',
       };
@@ -295,10 +322,53 @@ export class McpConnectionManager {
     await Promise.allSettled(tasks);
   }
 
-  async reconnect(name: string): Promise<void> {
-    const entry = this.entries.get(name);
+  /**
+   * Reconnect a server. Two extensions over the original name-only form:
+   *
+   *  - `config` carries a full replacement config (the "name + full config"
+   *    channel); plugin-owned entries reject it because their config is
+   *    owned by the plugin manifest and flows in via plugin sync.
+   *  - Without `config`, the current config is re-resolved through
+   *    {@link McpConnectionManagerOptions.configResolver} when one is wired:
+   *    file edits and plugin enable/disable land here, and a server that is
+   *    gone from every source fails instead of reconnecting a stale snapshot.
+   *    An unknown name is connected straight from the resolver result, which
+   *    covers servers added to a config file while the session was live.
+   */
+  async reconnect(name: string, config?: McpServerConfig): Promise<void> {
+    let entry = this.entries.get(name);
     if (entry === undefined) {
-      throw new KimiError(ErrorCodes.MCP_SERVER_NOT_FOUND, `Unknown MCP server: ${name}`);
+      const resolved = await this.options.configResolver?.(name);
+      if (resolved === undefined || resolved.config.enabled === false) {
+        throw new KimiError(ErrorCodes.MCP_SERVER_NOT_FOUND, `Unknown MCP server: ${name}`);
+      }
+      await this.connect(name, resolved.config, resolved.source);
+      return;
+    }
+    if (config !== undefined) {
+      if (entry.source === 'plugin') {
+        throw new KimiError(
+          ErrorCodes.REQUEST_INVALID,
+          `MCP server "${name}" is contributed by a plugin; update the plugin manifest instead`,
+        );
+      }
+      entry.config = config;
+    } else if (this.options.configResolver !== undefined && entry.source !== 'caller') {
+      // Caller-injected config intentionally shadows the on-disk layers for
+      // the session, so registry resolution never applies to it.
+      const resolved = await this.options.configResolver(name);
+      if (resolved !== undefined) {
+        if (resolved.config.enabled === false) {
+          throw new KimiError(ErrorCodes.MCP_SERVER_DISABLED, `MCP server is disabled: ${name}`);
+        }
+        entry.config = resolved.config;
+        entry.source = resolved.source;
+      } else if (entry.source !== undefined) {
+        throw new KimiError(
+          ErrorCodes.MCP_SERVER_NOT_FOUND,
+          `MCP server "${name}" is no longer configured`,
+        );
+      }
     }
     if (entry.config.enabled === false) {
       throw new KimiError(ErrorCodes.MCP_SERVER_DISABLED, `MCP server is disabled: ${name}`);
@@ -315,6 +385,11 @@ export class McpConnectionManager {
     await this.connectOne(entry, attemptId);
   }
 
+  /**
+   * {@link reconnect} deduped per server: concurrent triggers (the synthetic
+   * auth tool, a credential event, a panel action) join the same in-flight
+   * reconnect instead of starting a competing one.
+   */
   reconnectAndJoin(name: string): Promise<void> {
     const existing = this.inFlightReconnects.get(name);
     if (existing !== undefined) return existing;
@@ -325,6 +400,11 @@ export class McpConnectionManager {
     return work;
   }
 
+  /**
+   * {@link reconnectAndJoin} queued behind any in-flight reconnect: a
+   * credential that lands while a reconnect is already running triggers one
+   * more pass instead of being absorbed by the stale run.
+   */
   async reconnectAfterCurrent(name: string): Promise<void> {
     const existing = this.inFlightReconnects.get(name);
     if (existing !== undefined) await existing.catch(() => undefined);
@@ -400,8 +480,16 @@ export class McpConnectionManager {
       // moved on). Drop the event if so — the new attempt owns the state.
       if (!this.isCurrent(entry, attemptId)) return;
       if (entry.client !== client) return;
-      entry.status = 'failed';
-      entry.error = formatUnexpectedCloseError(entry.name, reason);
+      // A mid-session 401 (token revoked or expired past the refresh path) is
+      // an auth problem, not a crash — classify it so the panel and the
+      // synthetic authenticate tool can drive re-login instead of a retry.
+      if (reason.error !== undefined && this.shouldMarkNeedsAuth(entry, reason.error)) {
+        entry.status = 'needs-auth';
+        entry.error = `${entry.name} requires OAuth — run /mcp-config login ${entry.name}`;
+      } else {
+        entry.status = 'failed';
+        entry.error = formatUnexpectedCloseError(entry.name, reason);
+      }
       entry.tools = undefined;
       entry.rawTools = undefined;
       entry.enabledNames = undefined;
@@ -540,6 +628,8 @@ function toPublicEntry(entry: InternalEntry): McpServerEntry {
         ? entry.enabledNames.size
         : 0,
     error: entry.error,
+    source: entry.source,
+    config: entry.config,
   };
 }
 

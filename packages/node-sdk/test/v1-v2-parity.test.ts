@@ -309,6 +309,12 @@ const KNOWN_DIFFS = {
   // ever runs) and compares in full there.
   getMcpStartupMetrics: (metrics: McpStartupMetrics): unknown =>
     Object.keys(metrics).length === 1 ? {} : metrics,
+  // Session MCP entries: v1 tags each entry with its config `source` and the
+  // effective `config` it runs with; the v2 connection manager tracks neither
+  // (the wire type keeps both optional, v1-only for now), so both are
+  // projected away — name/transport/status/toolCount/error compare in full.
+  listMcpServers: (servers: unknown): unknown =>
+    (servers as McpServerList).map(({ source: _source, config: _config, ...entry }) => entry),
   // Session export: `zipPath` is the caller-chosen output (different per
   // engine by construction) — deleted. `sessionDir` compares after the
   // home-prefix scrub (same `<home>/sessions/<workdir-key>/<id>` layout on
@@ -3545,6 +3551,21 @@ async function expectSameMcpRejection(
   );
 }
 
+/**
+ * Managed-server results compare after the name sort plus a home-prefix
+ * scrub: the engines use isolated homes, so each entry's `origin` (its
+ * defining-file path) differs by construction.
+ */
+function expectSameManagedServers(
+  pair: GlobalMcpParityPair,
+  v1Servers: unknown,
+  v2Servers: unknown,
+): void {
+  expect(scrubHomePrefixes(normalize(v2Servers, 'name'), pair.v2Home)).toEqual(
+    scrubHomePrefixes(normalize(v1Servers, 'name'), pair.v1Home),
+  );
+}
+
 describe('v1↔v2 global MCP parity', () => {
   it('classifies global MCP authorization identically from persisted credentials', async () => {
     const statusServer = await startMcpAuthStatusServer();
@@ -3605,6 +3626,115 @@ describe('v1↔v2 global MCP parity', () => {
     }
   }, 15_000);
 
+  it('classifies global MCP authorization identically from real connection results', async () => {
+    const statusServer = await startMcpAuthStatusServer();
+    const pair = await makeGlobalMcpParityPair({
+      mcpServers: {
+        stdio: { command: 'local-command' },
+        plain: { transport: 'http', url: statusServer.plainUrl },
+        detected: { transport: 'http', url: statusServer.oauthUrl },
+        bearer: {
+          transport: 'http',
+          url: 'https://bearer.example.test/mcp',
+          bearerTokenEnvVar: 'EXAMPLE_MCP_TOKEN',
+        },
+        'oauth-required': {
+          transport: 'http',
+          url: statusServer.oauthUrl,
+          auth: 'oauth',
+        },
+        'oauth-authorized': {
+          transport: 'http',
+          url: statusServer.oauthUrl,
+          auth: 'oauth',
+        },
+        'oauth-stale': {
+          transport: 'http',
+          url: statusServer.oauthUrl,
+          auth: 'oauth',
+        },
+        'unavailable-explicit': {
+          transport: 'http',
+          url: statusServer.unavailableUrl,
+          auth: 'oauth',
+        },
+        'unavailable-dynamic': {
+          transport: 'http',
+          url: statusServer.unavailableUrl,
+        },
+      },
+    });
+    for (const homeDir of [pair.v1HomeDir, pair.v2HomeDir]) {
+      const externalOAuth = new McpOAuthService({ kimiHomeDir: homeDir });
+      await externalOAuth
+        .getProvider('oauth-authorized', statusServer.oauthUrl)
+        .saveTokens({ access_token: statusServer.authToken, token_type: 'Bearer' });
+      await externalOAuth
+        .getProvider('oauth-stale', statusServer.oauthUrl)
+        .saveTokens({ access_token: 'stale-test-access-token', token_type: 'Bearer' });
+    }
+
+    try {
+      // inspect probes every OAuth candidate with a real connection: the
+      // stale grant the server rejects is `oauth-expired` (re-login), and
+      // the unreachable servers are `unavailable`.
+      const [v1Servers, v2Servers] = await Promise.all([
+        pair.v1.inspectAppMcpServers(),
+        pair.v2.inspectAppMcpServers(),
+      ]);
+      const projectStatuses = (servers: typeof v1Servers) =>
+        servers.map(({ runtimeName: name, authStatus }) => ({ name, authStatus }));
+      const v1Statuses = projectStatuses(v1Servers);
+      const v2Statuses = projectStatuses(v2Servers);
+      expect(v2Statuses).toEqual(v1Statuses);
+      expect(v1Statuses).toEqual([
+        { name: 'stdio', authStatus: 'not-applicable' },
+        { name: 'plain', authStatus: 'not-applicable' },
+        { name: 'detected', authStatus: 'oauth-required' },
+        { name: 'bearer', authStatus: 'bearer-token' },
+        { name: 'oauth-required', authStatus: 'oauth-required' },
+        { name: 'oauth-authorized', authStatus: 'oauth-authorized' },
+        { name: 'oauth-stale', authStatus: 'oauth-expired' },
+        { name: 'unavailable-explicit', authStatus: 'unavailable' },
+        { name: 'unavailable-dynamic', authStatus: 'unavailable' },
+      ]);
+
+      const duplicateTarget = { source: 'global', name: 'oauth-required' } as const;
+      const [v1Duplicates, v2Duplicates] = await Promise.all([
+        pair.v1.inspectAppMcpServers([duplicateTarget, duplicateTarget]),
+        pair.v2.inspectAppMcpServers([duplicateTarget, duplicateTarget]),
+      ]);
+      expect(projectStatuses(v2Duplicates)).toEqual(projectStatuses(v1Duplicates));
+      expect(projectStatuses(v1Duplicates)).toEqual([
+        { name: 'oauth-required', authStatus: 'oauth-required' },
+        { name: 'oauth-required', authStatus: 'oauth-required' },
+      ]);
+
+      // The legacy name-based list stays offline (verify is opt-in): a
+      // stored grant is `oauth-authorized` even when the server would reject
+      // it — the deliberate offline false positive.
+      const [v1LegacyStatuses, v2LegacyStatuses] = await Promise.all([
+        pair.v1.listGlobalMcpServerAuthStatuses(),
+        pair.v2.listGlobalMcpServerAuthStatuses(),
+      ]);
+      expect(v2LegacyStatuses).toEqual(v1LegacyStatuses);
+      expect(v1LegacyStatuses).toEqual([
+        { name: 'stdio', authStatus: 'not-applicable' },
+        { name: 'plain', authStatus: 'not-applicable' },
+        { name: 'detected', authStatus: 'oauth-required' },
+        { name: 'bearer', authStatus: 'bearer-token' },
+        { name: 'oauth-required', authStatus: 'oauth-required' },
+        { name: 'oauth-authorized', authStatus: 'oauth-authorized' },
+        { name: 'oauth-stale', authStatus: 'oauth-authorized' },
+        { name: 'unavailable-explicit', authStatus: 'oauth-required' },
+        { name: 'unavailable-dynamic', authStatus: 'not-applicable' },
+      ]);
+    } finally {
+      await closeGlobalMcpPair(pair);
+      await statusServer.close();
+    }
+  }, 15_000);
+
   it('CRUD round-trips identically and writes byte-identical mcp.json files', async () => {
     const pair = await makeGlobalMcpParityPair({
       custom: { keep: true },
@@ -3622,20 +3752,27 @@ describe('v1↔v2 global MCP parity', () => {
         pair.v1.listGlobalMcpServers(),
         pair.v2.listGlobalMcpServers(),
       ]);
-      expect(normalize(v2Initial, 'name')).toEqual(normalize(v1Initial, 'name'));
+      expectSameManagedServers(pair, v1Initial, v2Initial);
       // The transport-less stdio entry parses with `transport: 'stdio'`
-      // injected; the `auth: 'oauth'` marker survives the round-trip.
+      // injected; the `auth: 'oauth'` marker survives the round-trip. Every
+      // entry is tagged as a mutable user-level one with the file as origin.
       expect(v1Initial).toEqual([
         {
           name: 'existing-stdio',
           transport: 'stdio',
           command: 'existing-command',
+          source: 'global',
+          origin: join(pair.v1HomeDir, 'mcp.json'),
+          mutable: true,
         },
         {
           name: 'existing-http',
           transport: 'http',
           url: 'https://example.test/mcp',
           auth: 'oauth',
+          source: 'global',
+          origin: join(pair.v1HomeDir, 'mcp.json'),
+          mutable: true,
         },
       ]);
 
@@ -3650,7 +3787,17 @@ describe('v1↔v2 global MCP parity', () => {
         pair.v1.addGlobalMcpServer(added),
         pair.v2.addGlobalMcpServer(added),
       ]);
-      expect(normalize(v2Added, 'name')).toEqual(normalize(v1Added, 'name'));
+      expectSameManagedServers(pair, v1Added, v2Added);
+
+      // Single-entry resolution returns the same managed shape on both.
+      const [v1Get, v2Get] = await Promise.all([
+        pair.v1.getGlobalMcpServer('added'),
+        pair.v2.getGlobalMcpServer('added'),
+      ]);
+      expect(scrubHomePrefixes(v2Get, pair.v2Home)).toEqual(
+        scrubHomePrefixes(v1Get, pair.v1Home),
+      );
+      expect(v1Get).toMatchObject({ name: 'added', source: 'global', mutable: true });
 
       const updated: McpServerConfig = {
         name: 'existing-http',
@@ -3662,13 +3809,13 @@ describe('v1↔v2 global MCP parity', () => {
         pair.v1.updateGlobalMcpServer(updated),
         pair.v2.updateGlobalMcpServer(updated),
       ]);
-      expect(normalize(v2Updated, 'name')).toEqual(normalize(v1Updated, 'name'));
+      expectSameManagedServers(pair, v1Updated, v2Updated);
 
       const [v1Removed, v2Removed] = await Promise.all([
         pair.v1.removeGlobalMcpServer('existing-stdio'),
         pair.v2.removeGlobalMcpServer('existing-stdio'),
       ]);
-      expect(normalize(v2Removed, 'name')).toEqual(normalize(v1Removed, 'name'));
+      expectSameManagedServers(pair, v1Removed, v2Removed);
       expect(v1Removed.map((server) => server.name)).toEqual(['existing-http', 'added']);
 
       // The persisted files are byte-identical across the engines (same
@@ -3730,8 +3877,14 @@ describe('v1↔v2 global MCP parity', () => {
         pair.v1.removeGlobalMcpServer('missing'),
         pair.v2.removeGlobalMcpServer('missing'),
       ]);
-      expect(normalize(v2Removed, 'name')).toEqual(normalize(v1Removed, 'name'));
+      expectSameManagedServers(pair, v1Removed, v2Removed);
       expect(v1Removed).toHaveLength(1);
+      // Single-entry resolution of an unknown name rejects identically.
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.getGlobalMcpServer('missing'),
+        (client) => client.getGlobalMcpServer('missing'),
+      );
     } finally {
       await closeGlobalMcpPair(pair);
     }
@@ -3852,6 +4005,27 @@ describe('v1↔v2 global MCP parity', () => {
       expect(v2Missing).toEqual(v1Missing);
       expect(v1Missing.success).toBe(false);
       expect(v1Missing.output).toMatch(/ENOENT|not found|spawn/i);
+      // The inline-config channel: probe a full unsaved config on both
+      // engines — the result matches the persisted-name probe, and a
+      // schema-invalid config rejects with the same config.invalid.
+      const inline: McpServerConfig = {
+        name: 'inline-working',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [MCP_STDIO_FIXTURE],
+      };
+      const [v1Inline, v2Inline] = await Promise.all([
+        pair.v1.testGlobalMcpServerConfig(inline),
+        pair.v2.testGlobalMcpServerConfig(inline),
+      ]);
+      expect(v2Inline).toEqual(v1Inline);
+      expect(v1Inline.success).toBe(true);
+      expect(v1Inline.output).toContain('Available tools: 3');
+      await expectSameMcpRejection(
+        pair,
+        (client) => client.testGlobalMcpServerConfig({ name: 'invalid' } as never),
+        (client) => client.testGlobalMcpServerConfig({ name: 'invalid' } as never),
+      );
     } finally {
       await closeGlobalMcpPair(pair);
       restoreEnv();
@@ -3912,7 +4086,8 @@ describe('v1↔v2 session MCP parity', () => {
       await createOnBoth(pair, { id: 'session_parity_mcp_list' });
       const input = { sessionId: 'session_parity_mcp_list' } as const;
       const [v1Servers, v2Servers] = await listMcpServersWhenSettled(pair, input);
-      expect(normalize(v2Servers, 'name')).toEqual(normalize(v1Servers, 'name'));
+      const project = KNOWN_DIFFS.listMcpServers;
+      expect(project(normalize(v2Servers, 'name'))).toEqual(project(normalize(v1Servers, 'name')));
       const byName = new Map(v1Servers.map((server) => [server.name, server]));
       expect(byName.get('working')).toMatchObject({
         transport: 'stdio',
@@ -4016,12 +4191,95 @@ describe('v1↔v2 session MCP parity', () => {
         pair.v1.listMcpServers(input),
         pair.v2.listMcpServers(input),
       ]);
-      expect(normalize(v2Servers, 'name')).toEqual(normalize(v1Servers, 'name'));
+      const project = KNOWN_DIFFS.listMcpServers;
+      expect(project(normalize(v2Servers, 'name'))).toEqual(project(normalize(v1Servers, 'name')));
       await expect(
         pair.v1.reconnectMcpServer({ sessionId: 'session_missing', name: 'working' }),
       ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
       await expect(
         pair.v2.reconnectMcpServer({ sessionId: 'session_missing', name: 'working' }),
+      ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+    } finally {
+      await closeSessionPair(pair);
+      restoreEnv();
+    }
+  }, 20_000);
+
+  it('addSessionMcpServer and the config-carrying reconnect behave identically', async () => {
+    const restoreEnv = scrubConfigEnv();
+    const pair = await makeSessionMcpPair();
+    try {
+      await createOnBoth(pair, { id: 'session_parity_mcp_add' });
+      const input = { sessionId: 'session_parity_mcp_add' } as const;
+      const project = KNOWN_DIFFS.listMcpServers;
+      const liveServer: McpServerConfig = {
+        name: 'added-live',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [MCP_STDIO_FIXTURE],
+      };
+      // Unpersisted: a session-local add connects on both engines and writes
+      // no mcp.json anywhere.
+      const [v1Added, v2Added] = await Promise.all([
+        pair.v1.addSessionMcpServer({ ...input, server: liveServer }),
+        pair.v2.addSessionMcpServer({ ...input, server: liveServer }),
+      ]);
+      expect(project([v2Added])).toEqual(project([v1Added]));
+      expect(v1Added).toMatchObject({ status: 'connected', toolCount: 3, source: 'caller' });
+      // persist: true also writes the user-level file — byte-identical across
+      // the engines — and v1 tags the entry `global`.
+      const persistedServer: McpServerConfig = {
+        name: 'persisted-live',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [MCP_STDIO_FIXTURE],
+        enabledTools: ['echo'],
+      };
+      const [v1Persisted, v2Persisted] = await Promise.all([
+        pair.v1.addSessionMcpServer({ ...input, server: persistedServer, persist: true }),
+        pair.v2.addSessionMcpServer({ ...input, server: persistedServer, persist: true }),
+      ]);
+      expect(project([v2Persisted])).toEqual(project([v1Persisted]));
+      expect(v1Persisted).toMatchObject({ status: 'connected', toolCount: 1, source: 'global' });
+      const [v1File, v2File] = await Promise.all([
+        readFile(join(pair.v1Home.raw, 'mcp.json'), 'utf-8'),
+        readFile(join(pair.v2Home.raw, 'mcp.json'), 'utf-8'),
+      ]);
+      expect(v2File).toBe(v1File);
+      // The "name + full config" reconnect channel replaces the running
+      // config — the narrowed tool filter shows up in the entry on both.
+      const replacement: McpServerConfig = { ...liveServer, enabledTools: ['echo'] };
+      await Promise.all([
+        pair.v1.reconnectMcpServer({ ...input, name: 'added-live', config: replacement }),
+        pair.v2.reconnectMcpServer({ ...input, name: 'added-live', config: replacement }),
+      ]);
+      // Settled read: the v2 engine watches the user mcp.json, so the
+      // persisted add above also lands as an asynchronous engine-side
+      // reconnect that a snapshot list can catch mid-flight.
+      const [v1Servers, v2Servers] = await listMcpServersWhenSettled(pair, input);
+      expect(project(normalize(v2Servers, 'name'))).toEqual(project(normalize(v1Servers, 'name')));
+      expect(v1Servers.find((server) => server.name === 'added-live')).toMatchObject({
+        status: 'connected',
+        toolCount: 1,
+      });
+      // A schema-invalid replacement config rejects with the same
+      // config.invalid message on both engines.
+      const [v1Bad, v2Bad] = await Promise.all([
+        captureRejection(
+          pair.v1.reconnectMcpServer({ ...input, name: 'added-live', config: { name: 'x' } as never }),
+        ),
+        captureRejection(
+          pair.v2.reconnectMcpServer({ ...input, name: 'added-live', config: { name: 'x' } as never }),
+        ),
+      ]);
+      expect(v1Bad).toMatchObject({ code: 'config.invalid' });
+      expect((v2Bad as Error).message).toBe((v1Bad as Error).message);
+      // Session-scoped adds require a live session on both engines.
+      await expect(
+        pair.v1.addSessionMcpServer({ sessionId: 'session_missing', server: liveServer }),
+      ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+      await expect(
+        pair.v2.addSessionMcpServer({ sessionId: 'session_missing', server: liveServer }),
       ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
     } finally {
       await closeSessionPair(pair);

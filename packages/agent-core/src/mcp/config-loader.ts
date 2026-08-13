@@ -37,6 +37,13 @@ export interface LoadMcpServersInput {
   readonly homeDir?: string;
 }
 
+export interface LoadMcpServersDetailedResult {
+  /** Later layers override earlier ones with the same key. */
+  readonly servers: Record<string, McpServerConfig>;
+  /** The file each effective entry was last defined in. */
+  readonly origins: Record<string, string>;
+}
+
 /**
  * Load MCP server declarations from the user-global `~/.kimi-code/mcp.json`,
  * the project-root `<project root>/.mcp.json`, and the project-local
@@ -51,13 +58,36 @@ export interface LoadMcpServersInput {
 export async function loadMcpServers(
   input: LoadMcpServersInput,
 ): Promise<Record<string, McpServerConfig>> {
+  return (await loadMcpServersDetailed(input)).servers;
+}
+
+/**
+ * {@link loadMcpServers} plus the defining-file origin of every effective
+ * entry, for management surfaces that show where a server came from.
+ */
+export async function loadMcpServersDetailed(
+  input: LoadMcpServersInput,
+): Promise<LoadMcpServersDetailedResult> {
   const paths = await resolveMcpJsonPaths({ cwd: input.cwd, homeDir: input.homeDir });
-  const [user, projectRoot, project] = await Promise.all([
-    readMcpJson(paths.user),
-    readMcpJson(paths.projectRoot, { stdioCwdBase: dirname(paths.projectRoot) }),
-    readMcpJson(paths.project),
-  ]);
-  return { ...user, ...projectRoot, ...project };
+  const layers: readonly [path: string, servers: Record<string, McpServerConfig>][] =
+    await Promise.all([
+      readMcpJson(paths.user),
+      readMcpJson(paths.projectRoot, { stdioCwdBase: dirname(paths.projectRoot) }),
+      readMcpJson(paths.project),
+    ]).then(([user, projectRoot, project]) => [
+      [paths.user, user],
+      [paths.projectRoot, projectRoot],
+      [paths.project, project],
+    ]);
+  const servers: Record<string, McpServerConfig> = {};
+  const origins: Record<string, string> = {};
+  for (const [path, layer] of layers) {
+    for (const [name, config] of Object.entries(layer)) {
+      servers[name] = config;
+      origins[name] = path;
+    }
+  }
+  return { servers, origins };
 }
 
 async function findProjectRoot(cwd: string): Promise<string> {

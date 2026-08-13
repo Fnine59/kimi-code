@@ -1,5 +1,9 @@
 import * as vscode from "vscode";
-import type { McpServerConfig as SdkMcpServerConfig, McpTestResult } from "@moonshot-ai/kimi-code-sdk";
+import type {
+  McpManagedServerInfo,
+  McpServerConfig as SdkMcpServerConfig,
+  McpTestResult,
+} from "@moonshot-ai/kimi-code-sdk";
 
 import { Events, Methods } from "../../shared/bridge";
 import {
@@ -114,14 +118,18 @@ export const mcpHandlers: Record<string, Handler<any, any>> = {
   },
 };
 
-function toWebviewServers(servers: readonly SdkMcpServerConfig[]): MCPServerConfig[] {
+function toWebviewServers(servers: readonly McpManagedServerInfo[]): MCPServerConfig[] {
   return servers
     .filter((server) => server.transport === "stdio" || server.transport === "http")
     .map((server) => {
-      if (server.transport === "stdio") {
-        return { ...server, env: maskSecretValues(server.env) } as MCPServerConfig;
+      // The management view's source/origin/mutable tags stay in the webview
+      // payload so the panel can hide mutating controls on read-only entries;
+      // only the nested plugin origin detail is dropped.
+      const { plugin: _plugin, ...config } = server;
+      if (config.transport === "stdio") {
+        return { ...config, env: maskSecretValues(config.env) } as MCPServerConfig;
       }
-      return { ...server, headers: maskSecretValues(server.headers) } as MCPServerConfig;
+      return { ...config, headers: maskSecretValues(config.headers) } as MCPServerConfig;
     });
 }
 
@@ -270,7 +278,7 @@ async function updateOrRenameServer(
   originalName: string,
   current: SdkMcpServerConfig | undefined,
   next: SdkMcpServerConfig,
-): Promise<readonly SdkMcpServerConfig[]> {
+): Promise<readonly McpManagedServerInfo[]> {
   if (next.name === originalName) {
     return harness.updateMcpServer(next);
   }
