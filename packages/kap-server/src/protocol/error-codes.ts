@@ -122,10 +122,12 @@ export const ErrorCode = {
   PROVIDER_ALREADY_EXISTS: 40921,
   /** page_token 损坏 / 版本不符 / 与当前查询条件不匹配，需从首页重新拉取 */
   PAGE_TOKEN_MISMATCH: 40922,
+  /** 会话标题生成不可用（flag 未开 / 无 managed OAuth 登录 / 还没有 prompt / 后端失败） */
+  SESSION_TITLE_UNAVAILABLE: 40923,
   /** capability 正在安装中，拒绝并发安装 */
-  CAPABILITY_INSTALL_IN_PROGRESS: 40923,
+  CAPABILITY_INSTALL_IN_PROGRESS: 40924,
   /** 当前平台/架构不支持该 capability */
-  CAPABILITY_UNSUPPORTED: 40924,
+  CAPABILITY_UNSUPPORTED: 40925,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,

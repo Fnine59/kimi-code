@@ -5,7 +5,7 @@
  *   - POST /api/v1/capabilities/{unknown}:install  → 40418
  *   - POST /api/v1/capabilities/{id} (bare)        → 40001
  *   - POST /api/v1/capabilities/{id}:{bogus}       → 40001
- *   - POST /api/v1/capabilities/kimi-cu:install on an unsupported host → 40924
+ *   - POST /api/v1/capabilities/kimi-cu:install on an unsupported host → 40925
  *     (skipped on macOS and Windows x64, where kimi-cu is supported)
  *
  * Real installs are never triggered from tests: the only `:install` calls
@@ -129,10 +129,10 @@ describe('server-v2 /api/v1 capabilities', () => {
   // kimi-cu is supported on macOS and Windows x64 — only genuinely
   // unsupported platforms (Linux, win32-arm64, …) get the 40924 rejection.
   it.skipIf(process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64'))(
-    'rejects kimi-cu install on unsupported platforms with 40924',
+    'rejects kimi-cu install on unsupported platforms with 40925',
     async () => {
       const { body } = await postJson<unknown>('/api/v1/capabilities/kimi-cu:install');
-      expect(body.code).toBe(40924);
+      expect(body.code).toBe(40925);
     },
   );
 });
