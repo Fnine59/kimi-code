@@ -25,10 +25,9 @@ import {
   appendMessageTo,
   applyLoopEventTo,
   type FoldEntryAdapter,
-  type FoldFrame,
   type LoopRecordedEvent,
 } from './loopEventFold';
-import { EMPTY_FOLD, type ContextMessage } from './types';
+import { EMPTY_FOLD, type ContextMessage, type ContextState } from './types';
 
 export interface ContextTranscript {
   readonly entries: readonly ContextMessage[];
@@ -58,18 +57,18 @@ export function reduceContextTranscript(records: Iterable<WireRecord>): ContextT
 }
 
 export function createContextTranscriptReducer(): ContextTranscriptReducer {
-  let frame: FoldFrame<TranscriptEntry> = { messages: [], fold: EMPTY_FOLD };
+  let state: ContextState<TranscriptEntry> = { messages: [], fold: EMPTY_FOLD };
   let foldedLength = 0;
   let clearFloor = 0;
 
-  const applyKernel = (next: FoldFrame<TranscriptEntry>): void => {
-    foldedLength += next.messages.length - frame.messages.length;
-    frame = next;
+  const applyKernel = (next: ContextState<TranscriptEntry>): void => {
+    foldedLength += next.messages.length - state.messages.length;
+    state = next;
   };
 
   const applyUndo = (count: number): void => {
     if (count <= 0) return;
-    const entries = frame.messages.slice();
+    const entries = state.messages.slice();
     let removedUserCount = 0;
     let removed = 0;
     for (let i = entries.length - 1; i >= clearFloor; i--) {
@@ -94,14 +93,14 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
       }
     }
     foldedLength = Math.max(0, foldedLength - removed);
-    frame = { messages: entries, fold: EMPTY_FOLD };
+    state = { messages: entries, fold: EMPTY_FOLD };
   };
 
   const add = (record: WireRecord): void => {
     switch (record.type) {
       case 'context.append_message': {
         applyKernel(
-          appendMessageTo(frame, {
+          appendMessageTo(state, {
             message: record['message'] as ContextMessage,
             time: record.time,
           }),
@@ -112,7 +111,7 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
         const time = record.time;
         applyKernel(
           applyLoopEventTo(
-            frame,
+            state,
             record['event'] as LoopRecordedEvent,
             entryAdapter,
             (message): TranscriptEntry => ({ message, time }),
@@ -127,20 +126,20 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
           toolCalls: [],
           origin: { kind: 'compaction_summary' },
         };
-        frame = {
-          messages: [...frame.messages, { message: summary, time: record.time }],
+        state = {
+          messages: [...state.messages, { message: summary, time: record.time }],
           fold: EMPTY_FOLD,
         };
-        foldedLength = recoverFoldedLength(record, frame.messages, clearFloor, foldedLength);
+        foldedLength = recoverFoldedLength(record, state.messages, clearFloor, foldedLength);
         return;
       }
       case 'context.undo':
         applyUndo(record['count'] as number);
         return;
       case 'context.clear':
-        clearFloor = frame.messages.length;
+        clearFloor = state.messages.length;
         foldedLength = 0;
-        frame = { messages: frame.messages, fold: EMPTY_FOLD };
+        state = { messages: state.messages, fold: EMPTY_FOLD };
         return;
       default:
         return;
@@ -150,8 +149,8 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
   return {
     add,
     result: () => ({
-      entries: frame.messages.map((entry) => entry.message),
-      times: frame.messages.map((entry) => entry.time),
+      entries: state.messages.map((entry) => entry.message),
+      times: state.messages.map((entry) => entry.time),
       foldedLength,
     }),
   };

@@ -160,9 +160,9 @@ export const EMPTY_FOLD: ContextFoldState<never> = Object.freeze({
   deferred: Object.freeze([]),
 });
 
-export interface ContextState {
-  readonly messages: readonly ContextMessage[];
-  readonly fold: ContextFoldState;
+export interface ContextState<E = ContextMessage> {
+  readonly messages: readonly E[];
+  readonly fold: ContextFoldState<E>;
 }
 
 export function freezeContextState(state: ContextState): ContextState {
