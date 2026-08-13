@@ -26,6 +26,11 @@ import type { BtwPanelController } from './btw-panel';
 export interface EditorKeyboardHost {
   state: TUIState;
   session: Session | undefined;
+  /**
+   * True when the TUI runs on the agent-core-v2 engine (startup-selected).
+   * Gates the paste-time upload to the daemon file store; the v1 engine has
+   * no file store and keeps the submit-time inline base64 form.
+   */
   readonly engineV2: boolean;
   cancelInFlight: (() => void) | undefined;
   /**
@@ -34,12 +39,6 @@ export interface EditorKeyboardHost {
    * env/built-in default.
    */
   harness?: KimiHarness | undefined;
-  /**
-   * True when the TUI runs on the agent-core-v2 engine (startup-selected).
-   * Gates the paste-time upload to the daemon file store; the v1 engine has
-   * no file store and keeps the submit-time inline base64 form.
-   */
-  readonly engineV2?: boolean | undefined;
 
   handleUserInput(text: string): void;
   readonly btwPanelController: BtwPanelController;

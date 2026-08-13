@@ -12,9 +12,10 @@
  * points: they track `input_steer` through `telemetry`, persist the derived
  * title/lastPrompt through `sessionMetadata` for the main agent only
  * (publishing the live update through `event`), enqueue, and settle
- * `{turn_id}` from the launch handle. Session tool gating is an edge
- * concern: callers apply `IAgentToolPolicyService.setSessionDisabledTools`
- * before submitting, the way kap-server's prompt route composes it.
+ * `{turn_id}` from the launch handle. A `submit` payload may carry a
+ * client-chosen `promptId` (admitted through the reservation so a duplicate
+ * rejects before any session state changes) and a client-managed session
+ * tool denylist, applied through `toolPolicy` before the enqueue.
  * The pure-data `launching` flag is registered into
  * `agentState` (`IAgentStateService`) and read/written through it; the
  * `active` / `pending` / `steered` records stay plain fields because their
@@ -44,6 +45,8 @@ import { IAgentSystemReminderService } from '#/agent/systemReminder/systemRemind
 import type { ExecutableToolResult } from '#/tool/toolContract';
 import type { ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { ProfileError } from '#/agent/profile/profile';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IFileService } from '#/app/file/fileService';
 import { IEventBus } from '#/app/event/eventBus';
@@ -133,6 +136,7 @@ export class AgentPromptService extends Disposable implements IAgentPromptServic
     @IEventService private readonly eventService: IEventService,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
+    @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
   ) {
     super();
     this.states.register(promptLaunchingKey);
@@ -248,16 +252,33 @@ export class AgentPromptService extends Disposable implements IAgentPromptServic
   }
 
   async submit(payload: PromptPayload): Promise<PromptLaunchResult | undefined> {
-    await this.updatePromptMetadata(promptMetadataTextFromContentParts(payload.input));
-    const handle = await this.enqueue({ message: {
-      role: 'user',
-      content: [...payload.input],
-      toolCalls: [],
-      origin: { kind: 'user' },
-    } });
-    if (handle.state === 'pending') return undefined;
-    const turn = await handle.launched;
-    return turn === undefined ? undefined : { turn_id: turn.id };
+    // Reserve the (possibly client-chosen) id first: a duplicate promptId must
+    // reject before the denylist or the session metadata changes.
+    const reservation = this[promptAdmission](payload.promptId);
+    try {
+      if (payload.disabledTools !== undefined) {
+        try {
+          await this.toolPolicy.setSessionDisabledTools(payload.disabledTools);
+        } catch (error) {
+          if (error instanceof ProfileError) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, error.message);
+          }
+          throw error;
+        }
+      }
+      await this.updatePromptMetadata(promptMetadataTextFromContentParts(payload.input));
+      const handle = await reservation.submit({
+        role: 'user',
+        content: [...payload.input],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      });
+      if (handle.state === 'pending') return undefined;
+      const turn = await handle.launched;
+      return turn === undefined ? undefined : { turn_id: turn.id };
+    } finally {
+      reservation.dispose();
+    }
   }
 
   async submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined> {

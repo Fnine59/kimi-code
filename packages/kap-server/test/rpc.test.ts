@@ -11,6 +11,7 @@ import {
   IAgentShellCommandService,
   IAppendLogStore,
   IDebugEventsService,
+  IEventService,
   IInstantiationService,
   IPluginService,
   ISessionIndex,
@@ -349,7 +350,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
     const { body } = await call<{ turn_id: number }>(
       'POST',
-      rpc('agent', IAgentRPCService, 'prompt', { sid: id, aid: 'main' }),
+      rpc('agent', IAgentPromptService, 'submit', { sid: id, aid: 'main' }),
       { input: [{ type: 'text', text: 'hello' }] },
     );
     expect(body.code).toBe(0);
@@ -359,7 +360,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
   it('maps a duplicate promptId to 40923 before metadata changes', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
-    const path = rpc('agent', IAgentRPCService, 'prompt', { sid: id, aid: 'main' });
+    const path = rpc('agent', IAgentPromptService, 'submit', { sid: id, aid: 'main' });
 
     const first = await call<{ turn_id: number }>('POST', path, {
       input: [{ type: 'text', text: 'first prompt' }],
@@ -386,7 +387,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
     const { body } = await call<null>(
       'POST',
-      rpc('agent', IAgentRPCService, 'prompt', { sid: id, aid: 'main' }),
+      rpc('agent', IAgentPromptService, 'submit', { sid: id, aid: 'main' }),
       {
         input: [{ type: 'text', text: 'must not become metadata' }],
         disabledTools: ['Bash'],
@@ -413,7 +414,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
     const { body } = await call<{ turn_id: number }>(
       'POST',
-      rpc('agent', IAgentRPCService, 'prompt', { sid: id, aid: 'main' }),
+      rpc('agent', IAgentPromptService, 'submit', { sid: id, aid: 'main' }),
       { input: [{ type: 'text', text: 'hello title' }] },
     );
     expect(body.code).toBe(0);
@@ -442,7 +443,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
 
     const { body } = await call<{ turn_id: number }>(
       'POST',
-      rpc('agent', IAgentRPCService, 'prompt', { sid: id, aid: 'main' }),
+      rpc('agent', IAgentPromptService, 'submit', { sid: id, aid: 'main' }),
       { input: [{ type: 'text', text: 'should not become the title' }] },
     );
     expect(body.code).toBe(0);

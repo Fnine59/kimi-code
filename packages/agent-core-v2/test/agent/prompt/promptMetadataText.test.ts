@@ -53,24 +53,20 @@ describe('promptMetadataTextFromContentParts', () => {
     // A standalone media path tag is machine markup: the materialization path
     // must never leak into titles / lastPrompt, whether or not a daemon-ref
     // part rides next to it.
-    const text = promptMetadataTextFromPayload({
-      input: [
-        { type: 'text', text: 'what is this?' },
-        { type: 'text', text: '<image path="/Users/alice/cache/f_123.png"></image>' },
-        { type: 'image_url', imageUrl: { url: 'kimi-file://f_123?path=%2FUsers%2Falice%2Fcache%2Ff_123.png' } },
-      ],
-    });
+    const text = promptMetadataTextFromContentParts([
+      { type: 'text', text: 'what is this?' },
+      { type: 'text', text: '<image path="/Users/alice/cache/f_123.png"></image>' },
+      { type: 'image_url', imageUrl: { url: 'kimi-file://f_123?path=%2FUsers%2Falice%2Fcache%2Ff_123.png' } },
+    ]);
     expect(text).toBe('what is this? [image]');
     expect(text).not.toContain('/Users/alice');
   });
 
   it('keeps a bare <image path> tag out of the metadata text', () => {
-    const text = promptMetadataTextFromPayload({
-      input: [
-        { type: 'text', text: '<image path="/cache/f_123.png">' },
-        { type: 'text', text: 'describe it' },
-      ],
-    });
+    const text = promptMetadataTextFromContentParts([
+      { type: 'text', text: '<image path="/cache/f_123.png">' },
+      { type: 'text', text: 'describe it' },
+    ]);
     expect(text).toBe('describe it');
     expect(text).not.toContain('/cache');
   });

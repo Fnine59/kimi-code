@@ -31,6 +31,7 @@ import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { AgentSystemReminderService } from '#/agent/systemReminder/systemReminderService';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventBus } from '#/app/event/eventBus';
 import { IEventService } from '#/app/event/event';
@@ -122,6 +123,9 @@ function harness(
       reg.defineInstance(IAgentLoopService, loop);
       reg.defineInstance(IWireService, opts.wire ?? stubWire());
       reg.defineInstance(IAgentToolExecutorService, stubToolExecutor());
+      reg.definePartialInstance(IAgentToolPolicyService, {
+        setSessionDisabledTools: async () => {},
+      });
       reg.defineInstance(IAgentFullCompactionService, fullCompaction);
       reg.define(IEventBus, EventBusService);
       reg.define(IAgentSystemReminderService, AgentSystemReminderService);
@@ -147,7 +151,6 @@ function harness(
         update: async () => {},
       });
       reg.definePartialInstance(IEventService, { publish: () => {} });
-      reg.definePartialInstance(ISessionContext, { sessionId: 'test-session' });
       reg.defineInstance(IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: '' }));
     }
   });

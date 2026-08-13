@@ -21,7 +21,6 @@ import {
   ISessionMetadata,
   promptMetadataTextFromContentParts,
   ProfileError,
-  type ContentPart,
   type PromptHandle,
   type PromptQueueSnapshot,
   type PromptReservation,
@@ -46,7 +45,6 @@ import {
   promptSteerResultSchema,
   promptSubmissionSchema,
   promptSubmitResultSchema,
-  type PromptSubmission,
 } from '../protocol/rest-prompt';
 import { z } from 'zod';
 

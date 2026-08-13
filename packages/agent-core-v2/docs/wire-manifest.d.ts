@@ -21,7 +21,7 @@
 // owning model offloads inline media to blob storage), cross-reducers
 // (foreign models that also reduce this record on dispatch and replay).
 
-// Index (49 record types)
+// Index (50 record types)
 //   config.update                      profile                     persisted  src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory               persisted  src/agent/contextMemory/contextOps.ts
 //   context.append_message             contextMemory               persisted  src/agent/contextMemory/contextOps.ts
@@ -53,7 +53,7 @@
 //   plan.revision                      plan                        persisted  src/features/plan/planOps.ts
 //   plugin.session_start               pluginSessionStartSnapshot  persisted  src/agent/plugin/agentPluginOps.ts
 //   profile.bind                       profile                     persisted  src/agent/profile/profileOps.ts
-//   prompt.accepted                    promptAdmission       persisted  src/agent/prompt/promptOps.ts
+//   prompt.accepted                    promptAdmission             persisted  src/agent/prompt/promptOps.ts
 //   skill.activate                     skill                       transient  src/agent/skill/skillOps.ts
 //   swarm_mode.enter                   swarm                       persisted  src/features/swarm/swarmOps.ts
 //   swarm_mode.exit                    swarm                       persisted  src/features/swarm/swarmOps.ts

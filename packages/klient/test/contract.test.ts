@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import { pluginManifestSchema } from '../src/contract/global/plugins.js';
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
-import { promptPayloadSchema } from '../src/contract/agent/rpc.js';
+import { promptPayloadSchema } from '../src/contract/agent/schemas.js';
 
 type McpTimeoutField = 'startupTimeoutMs' | 'toolTimeoutMs';
 
