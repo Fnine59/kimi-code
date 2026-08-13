@@ -347,14 +347,8 @@ describe('transcript/model fold parity', () => {
 
   function comparable(messages: readonly ContextMessage[]): unknown {
     return messages.map((m) => ({
-      role: m.role,
+      ...m,
       content: m.origin?.kind === 'compaction_summary' ? '<summary>' : m.content,
-      toolCalls: m.toolCalls,
-      toolCallId: m.toolCallId,
-      isError: m.isError,
-      note: m.note,
-      origin: m.origin,
-      partial: m.partial,
     }));
   }
 
