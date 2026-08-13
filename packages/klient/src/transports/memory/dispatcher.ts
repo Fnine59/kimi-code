@@ -25,6 +25,7 @@ import type {
   GetResult,
   SaveOptions,
 } from '@moonshot-ai/agent-core-v2/app/file/fileService';
+import { FileErrors } from '@moonshot-ai/agent-core-v2/app/file/fileService';
 import { Error2, ErrorCodes } from '@moonshot-ai/agent-core-v2/errors';
 
 import { Readable } from 'node:stream';
@@ -60,6 +61,19 @@ export interface MemoryDispatcher {
 const REQUEST_INVALID = 40001;
 const NOT_FOUND = 40404;
 const PROMPT_ID_CONFLICT = 40923;
+
+/**
+ * Engine file errors cross the facade as public `RPCError`s, never as the
+ * engine's raw `Error2`. The dispatcher is shared by both transports, so
+ * memory and ipc then surface the identical `NOT_FOUND` code for a stale or
+ * expired upload id.
+ */
+function rethrowFileErrorAsRpc(error: unknown): never {
+  if (error instanceof Error2 && error.code === FileErrors.codes.FILE_NOT_FOUND) {
+    throw new RPCError(NOT_FOUND, error.message, error.details);
+  }
+  throw error;
+}
 
 type ScopeKind = 'core' | 'workspace' | 'session' | 'agent';
 
@@ -175,22 +189,30 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       if (service === 'fileService' && method === 'save') {
         const [data, filename, options] = args as [string, string, SaveOptions | undefined];
         const files = instance as FileServiceWireTarget;
-        const meta = await files.save(
-          Readable.from(Buffer.from(data, 'base64')),
-          filename,
-          options,
-        );
-        return wireClone(meta);
+        try {
+          const meta = await files.save(
+            Readable.from(Buffer.from(data, 'base64')),
+            filename,
+            options,
+          );
+          return wireClone(meta);
+        } catch (error) {
+          rethrowFileErrorAsRpc(error);
+        }
       }
       if (service === 'fileService' && method === 'get') {
         const [fileId] = args as [string];
         const files = instance as FileServiceWireTarget;
-        const { meta, stream } = await files.get(fileId);
-        const chunks: Buffer[] = [];
-        for await (const chunk of stream()) {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+        try {
+          const { meta, stream } = await files.get(fileId);
+          const chunks: Buffer[] = [];
+          for await (const chunk of stream()) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+          }
+          return { meta: wireClone(meta), data: Buffer.concat(chunks).toString('base64') };
+        } catch (error) {
+          rethrowFileErrorAsRpc(error);
         }
-        return { meta: wireClone(meta), data: Buffer.concat(chunks).toString('base64') };
       }
       const member = instance[method];
       if (member === undefined) {

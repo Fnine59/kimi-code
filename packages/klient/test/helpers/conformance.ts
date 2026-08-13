@@ -244,7 +244,9 @@ export function defineKlientConformance(
       expect([...downloaded.data]).toEqual([...bytes]);
 
       await files.delete(meta.id);
-      await expect(files.get(meta.id)).rejects.toThrow();
+      // Both transports surface a deleted/expired upload as the same public
+      // RPCError code, never the engine's raw error type.
+      await expect(files.get(meta.id)).rejects.toMatchObject({ name: 'RPCError', code: 40404 });
     });
 
     it('kosong lists models/providers and anonymous provider round-trips', async () => {
