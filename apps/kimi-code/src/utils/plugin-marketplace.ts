@@ -19,7 +19,7 @@ import {
   type MarketplaceLocation,
   type PluginMarketplace,
   type PluginMarketplaceEntry,
-} from '@moonshot-ai/agent-core-v2';
+} from '@moonshot-ai/agent-core-v2/app/plugin/marketplace';
 
 import {
   KIMI_CODE_PLUGIN_MARKETPLACE_URL,
@@ -33,7 +33,7 @@ export {
   type PluginMarketplaceEntry,
   type PluginMarketplaceTier,
   type MarketplaceUpdateStatus,
-} from '@moonshot-ai/agent-core-v2';
+} from '@moonshot-ai/agent-core-v2/app/plugin/marketplace';
 
 export interface LoadPluginMarketplaceOptions {
   readonly workDir: string;
