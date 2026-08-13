@@ -18,6 +18,7 @@ import {
   ISessionIndex,
   ISessionIndexMirror,
   IWorkspaceService,
+  KIMI_CODE_PLUGIN_MARKETPLACE_URL,
   logSeed,
   resolveConfigPath,
   resolveKimiHome,
@@ -99,9 +100,6 @@ export interface ServerHostIdentity extends KimiHostIdentity {
   /** Replaces the `${reply_style_guide}` block in the base system prompt. */
   readonly replyStyleGuide?: string;
 }
-
-/** Default plugin marketplace catalog (overridable per server option or env). */
-const DEFAULT_PLUGIN_MARKETPLACE_URL = 'https://code.kimi.com/kimi-code/plugins/marketplace.json';
 
 export interface ServerStartOptions {
   readonly host?: string;
@@ -516,7 +514,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     pluginMarketplaceUrl:
       opts.pluginMarketplaceUrl ??
       process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] ??
-      DEFAULT_PLUGIN_MARKETPLACE_URL,
+      KIMI_CODE_PLUGIN_MARKETPLACE_URL,
     pluginMarketplaceIsDefault:
       opts.pluginMarketplaceUrl === undefined &&
       (process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] === undefined ||
