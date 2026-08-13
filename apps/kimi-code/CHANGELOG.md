@@ -1,5 +1,15 @@
 # @moonshot-ai/kimi-code
 
+## 0.36.1
+
+### Patch Changes
+
+- [#2884](https://github.com/MoonshotAI/kimi-code/pull/2884) [`1811bd4`](https://github.com/MoonshotAI/kimi-code/commit/1811bd4baf5b75ba076e2a24825f9c4f82c13341) Thanks [@liruifengv](https://github.com/liruifengv)! - Fix startup banner text wrapping on narrow terminals.
+
+- [#2899](https://github.com/MoonshotAI/kimi-code/pull/2899) [`102984a`](https://github.com/MoonshotAI/kimi-code/commit/102984aa660d752ba8dd7d1aba155575f32affe2) Thanks [@oocz](https://github.com/oocz)! - Fix MCP OAuth cancellation leaving an in-flight authorization waiting for its callback timeout.
+
+- [#2876](https://github.com/MoonshotAI/kimi-code/pull/2876) [`5912d4c`](https://github.com/MoonshotAI/kimi-code/commit/5912d4c7d19d68975e85b007976b1bef59edae5c) Thanks [@7Sageer](https://github.com/7Sageer)! - Fix repeated file-watcher errors on Windows when the workspace is a drive root (such as `E:\`) or a UNC network share.
+
 ## 0.36.0
 
 ### Minor Changes
