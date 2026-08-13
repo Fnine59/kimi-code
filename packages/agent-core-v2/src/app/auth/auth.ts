@@ -8,6 +8,14 @@
  * device-code client that `IOAuthService` delegates the OAuth protocol to, and
  * the `IAuthSummaryService` used to summarize auth state and provide the
  * prompt auth-readiness gate. App-scoped — shared across the application.
+ *
+ * Region handling: `startLogin` accepts an explicit `region` choice that maps
+ * to the region profile's OAuth/API hosts (passed for 'cn' too, so switching
+ * back overrides a persisted overseas login; `KIMI_CODE_OAUTH_HOST` /
+ * `KIMI_CODE_BASE_URL` env overrides keep priority). `getRegion()` resolves
+ * the client region as env override → persisted login host → persisted
+ * default-slot login key → install marker (off when the host sets
+ * `KIMI_CODE_REGION_MARKER=off`, e.g. the desktop embedded server) → 'cn'.
  */
 
 import type {
@@ -40,12 +48,6 @@ export interface AuthStatus {
 }
 
 export interface OAuthLoginOptions {
-  /**
-   * Explicit region choice from the login UI. Maps to the region profile's
-   * OAuth/API hosts (including for 'cn', so switching back overrides a
-   * persisted overseas login); yields to `KIMI_CODE_OAUTH_HOST` /
-   * `KIMI_CODE_BASE_URL` env overrides.
-   */
   readonly region?: KimiRegion;
 }
 
@@ -62,12 +64,6 @@ export interface IOAuthService {
   getManagedUserInfo(provider?: string): Promise<AuthManagedUserInfoResult>;
   resolveTokenProvider(provider: string, oauthRef?: OAuthRef): BearerTokenProvider | undefined;
   getCachedAccessToken(provider: string, oauthRef?: OAuthRef): Promise<string | undefined>;
-  /**
-   * Resolve the client's region (env override → persisted login host →
-   * persisted default-slot login key → install marker → 'cn'). Hosts that
-   * must ignore the install marker set `KIMI_CODE_REGION_MARKER=off` (e.g.
-   * the desktop app's embedded server).
-   */
   getRegion(): KimiRegion;
 }
 

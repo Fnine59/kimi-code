@@ -65,10 +65,13 @@ export class CapabilityService implements ICapabilityService {
         userHomeDir: homedir(),
         plugins,
         hostProcess,
-        resolveRegion: () =>
-          resolveKimiRegion({
-            configuredOAuthHost: providers.get(KIMI_CODE_PROVIDER_NAME)?.oauth?.oauthHost,
-          }),
+        resolveRegion: () => {
+          const oauth = providers.get(KIMI_CODE_PROVIDER_NAME)?.oauth;
+          return resolveKimiRegion({
+            configuredOAuthHost: oauth?.oauthHost,
+            configuredOAuthKey: oauth?.key,
+          });
+        },
       };
       this.entries = new Map<CapabilityId, CapabilityEntry>([
         ['kimi-cu', createKimiCuEntry(ctx)],
