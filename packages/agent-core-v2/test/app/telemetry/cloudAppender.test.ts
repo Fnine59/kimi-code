@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -138,6 +138,33 @@ describe('CloudAppender', () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.url).toBe('https://telemetry-logs.kimi.ai/v1/event');
+  });
+
+  it('honors KIMI_CODE_REGION_MARKER=off so embedded servers ignore the install marker', async () => {
+    writeFileSync(join(homeDir, 'region'), 'overseas\n');
+    const savedMarkerFlag = process.env['KIMI_CODE_REGION_MARKER'];
+    process.env['KIMI_CODE_REGION_MARKER'] = 'off';
+    try {
+      const requests: CapturedRequest[] = [];
+      const appender = new CloudAppender(
+        baseOptions({
+          homeDir,
+          fetchImpl: makeFetch((req) => {
+            requests.push(req);
+            return okResponse();
+          }),
+        }),
+      );
+
+      appender.track('tool.call', { name: 'bash' });
+      await appender.flush();
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url).toBe('https://telemetry-logs.kimi.com/v1/event');
+    } finally {
+      if (savedMarkerFlag === undefined) delete process.env['KIMI_CODE_REGION_MARKER'];
+      else process.env['KIMI_CODE_REGION_MARKER'] = savedMarkerFlag;
+    }
   });
 
   it('applies setContext sessionId and model updates to subsequent events', async () => {

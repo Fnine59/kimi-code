@@ -72,7 +72,9 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 function defaultTelemetryEndpoint(): string {
-  return kimiRegionProfile(resolveKimiRegion()).telemetryEndpoint;
+  return kimiRegionProfile(
+    resolveKimiRegion({ readMarker: process.env['KIMI_CODE_REGION_MARKER'] !== 'off' }),
+  ).telemetryEndpoint;
 }
 
 export class CloudTransport {
