@@ -4,7 +4,8 @@
  * Manages the built-in product capabilities (`kimi-cu`, `kimi-webbridge`):
  * layered readiness detection and idempotent install orchestration. Entries
  * are hardcoded in a closed registry — install sources are fixed official
- * CDN URLs, never client-supplied.
+ * CDN URLs, never client-supplied. Install progress transitions are published
+ * through `onDidChangeInstall` (start / step / settle / error).
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -15,7 +16,6 @@ import type { CapabilityInstallChange, CapabilityStatus } from './types';
 export interface ICapabilityService {
   readonly _serviceBrand: undefined;
 
-  /** Fires on every install progress transition (start / step / settle / error). */
   readonly onDidChangeInstall: Event<CapabilityInstallChange>;
 
   listCapabilities(): Promise<readonly CapabilityStatus[]>;

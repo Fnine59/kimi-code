@@ -981,6 +981,8 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   sessionWorkChangedEventSchema,
   sessionStatusChangedEventSchema,
   diUnitChangedEventSchema,
+  pluginChangedEventSchema,
+  capabilityChangedEventSchema,
   goalUpdatedEventSchema,
   skillActivatedEventSchema,
   pluginCommandActivatedEventSchema,
