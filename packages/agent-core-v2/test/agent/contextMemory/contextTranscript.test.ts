@@ -4,6 +4,18 @@
  * compaction keeps the prefix and appends a summary marker; undo removes the
  * tail but stops at compaction summaries / clear floors; clear keeps the
  * transcript but resets the folded view.
+ *
+ * The `transcript/model fold parity` block replays one record stream through
+ * both the transcript reducer and the model fold (`foldAppendMessage` /
+ * `foldLoopEvent` / `contextOps`) and asserts after EVERY record prefix that
+ * the transcript's current conversation (the tail of `foldedLength` entries)
+ * matches the model's messages. Two divergences are by design: the
+ * model-facing compaction summary text (`contextSummary`) differs from the
+ * display-facing one (`summary`), so comparisons mask summary content; and
+ * compaction pauses the check until the next clear, because the display's
+ * `foldedLength` is a UI collapse metric (kept users + summary marker, and
+ * legacy records put the summary first in the model but last in the display) —
+ * clear realigns the two views.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -336,8 +348,6 @@ describe('transcript/model fold parity', () => {
   function comparable(messages: readonly ContextMessage[]): unknown {
     return messages.map((m) => ({
       role: m.role,
-      // The model-facing compaction summary text (contextSummary) differs from
-      // the display-facing one (summary) by design — mask it.
       content: m.origin?.kind === 'compaction_summary' ? '<summary>' : m.content,
       toolCalls: m.toolCalls,
       toolCallId: m.toolCallId,
@@ -348,12 +358,6 @@ describe('transcript/model fold parity', () => {
     }));
   }
 
-  // Asserts after EVERY prefix of the stream that the transcript's current
-  // conversation (the tail of `foldedLength` entries) matches the model fold.
-  // Compaction pauses the check until the next clear: the display's
-  // foldedLength is a UI collapse metric (kept users + summary marker, and
-  // legacy records put the summary first in the model but last in the
-  // display), so the two views diverge there BY DESIGN; clear realigns them.
   function expectParity(records: WireRecord[]): void {
     let state: ContextState = { messages: [], fold: EMPTY_FOLD };
     const reducer = createContextTranscriptReducer();
@@ -373,22 +377,17 @@ describe('transcript/model fold parity', () => {
     expectParity([
       appendMessage(userMessage('u1', { kind: 'user' })),
       ...assistantStep('s1', 'a1'),
-      // s2: a failed attempt left open (content + unanswered tool call)…
       loopEvent({ type: 'step.begin', uuid: 's2' }),
       loopEvent({ type: 'content.part', stepUuid: 's2', part: { type: 'text', text: 'half' } }),
       loopEvent({ type: 'tool.call', stepUuid: 's2', toolCallId: 'c1', name: 'Bash', args: {} }),
-      // …settled by the retry's step.begin, then s3 runs a full exchange…
       loopEvent({ type: 'step.begin', uuid: 's3' }),
       loopEvent({ type: 'content.part', stepUuid: 's3', part: { type: 'text', text: 'a3' } }),
       loopEvent({ type: 'tool.call', stepUuid: 's3', toolCallId: 'c2', name: 'Read', args: {} }),
-      // …during which a plain append is deferred until the exchange closes.
       appendMessage(userMessage('injected mid-exchange')),
       loopEvent({ type: 'tool.result', toolCallId: 'c2', result: { output: 'ok' } }),
       loopEvent({ type: 'step.end', uuid: 's3' }),
       appendMessage(userMessage('u2', { kind: 'user' })),
       undo(1),
-      // keptUserMessageCount = the 2 compactable user messages ('u1' and the
-      // origin-less 'injected mid-exchange') so the model keeps both.
       compaction('SUM', 7, 2),
       appendMessage(userMessage('u3', { kind: 'user' })),
       { type: 'context.clear' },
@@ -401,7 +400,6 @@ describe('transcript/model fold parity', () => {
       appendMessage(userMessage('q', { kind: 'user' })),
       loopEvent({ type: 'step.begin', uuid: 's1' }),
       loopEvent({ type: 'tool.call', stepUuid: 's1', toolCallId: 'c1', name: 'Bash', args: {} }),
-      // resume without a result: the next user message closes the exchange…
       appendMessage(userMessage('next', { kind: 'user' })),
       ...assistantStep('s2', 'done'),
       undo(1),
