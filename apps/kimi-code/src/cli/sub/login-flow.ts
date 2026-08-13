@@ -10,7 +10,7 @@ import type { KimiRegion } from '@moonshot-ai/kimi-code-oauth';
 
 import { createKimiCodeHostIdentity } from '#/cli/version';
 import { openUrl } from '#/utils/open-url';
-import { currentKimiRegion, persistedKimiOAuthHost } from '#/utils/region';
+import { currentKimiRegion, persistedKimiOAuthRef } from '#/utils/region';
 
 /** Parse a `--region` CLI flag; exits with an actionable message on bad input. */
 export function parseRegionFlag(value: string): KimiRegion {
@@ -23,9 +23,12 @@ export function parseRegionFlag(value: string): KimiRegion {
 
 export async function runLoginFlow(options: { region?: KimiRegion } = {}): Promise<never> {
   // No flag: a fresh install (no persisted login) follows the resolved region
-  // (env/marker/default); an existing login keeps its own environment.
+  // (env/marker/default); an existing login keeps its own environment. A
+  // default-slot (cn) login persists no host, so it takes the resolved region
+  // too — which the default slot's key pins to 'cn'.
   const region =
-    options.region ?? (persistedKimiOAuthHost() === undefined ? currentKimiRegion() : undefined);
+    options.region ??
+    (persistedKimiOAuthRef()?.oauthHost === undefined ? currentKimiRegion() : undefined);
   const identity = createKimiCodeHostIdentity();
   const harness = createKimiHarness({
     identity,

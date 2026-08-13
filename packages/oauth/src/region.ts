@@ -10,9 +10,13 @@
  * Resolution order (first match wins):
  *   1. env override (`KIMI_CODE_OAUTH_HOST` / `KIMI_OAUTH_HOST`)
  *   2. persisted login (the `oauthHost` stored in config.toml's oauth ref)
- *   3. install-channel marker file (`<home>/region`, written by install
+ *   3. persisted default-slot login (the oauth ref's key equals
+ *      `KIMI_CODE_OAUTH_KEY` — a mainland-China login persists no
+ *      `oauthHost`, so the default slot's presence is an explicit-cn signal
+ *      that outranks the marker)
+ *   4. install-channel marker file (`<home>/region`, written by install
  *      scripts; consultable only before the first login)
- *   4. default 'cn'
+ *   5. default 'cn'
  */
 
 import { readFileSync } from 'node:fs';
@@ -23,7 +27,7 @@ import { z } from 'zod';
 
 import { DEFAULT_KIMI_CODE_OAUTH_HOST } from './constants';
 import { DEFAULT_KIMI_CODE_BASE_URL } from './managed-usage';
-import { kimiCodeEnvBaseUrl, kimiCodeEnvOAuthHost } from './managed-kimi-code';
+import { kimiCodeEnvBaseUrl, kimiCodeEnvOAuthHost, KIMI_CODE_OAUTH_KEY } from './managed-kimi-code';
 
 export type KimiRegion = 'cn' | 'overseas';
 
@@ -108,6 +112,13 @@ export interface ResolveKimiRegionOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** The `oauthHost` persisted in config.toml's oauth ref, if any. */
   readonly configuredOAuthHost?: string;
+  /**
+   * The credential key persisted in config.toml's oauth ref, if any. The
+   * default slot ({@link KIMI_CODE_OAUTH_KEY}) only ever holds a
+   * mainland-China login — cn persists no `oauthHost` — so its presence is
+   * an explicit-cn signal that outranks the install-channel marker.
+   */
+  readonly configuredOAuthKey?: string;
   /** Kimi home dir; defaults to `KIMI_CODE_HOME` or `~/.kimi-code`. */
   readonly homeDir?: string;
   /**
@@ -164,6 +175,7 @@ export function resolveKimiRegion(options: ResolveKimiRegionOptions = {}): KimiR
     const configuredRegion = regionForOAuthHost(configured);
     if (configuredRegion !== undefined) return configuredRegion;
   }
+  if (options.configuredOAuthKey === KIMI_CODE_OAUTH_KEY) return 'cn';
   if (options.readMarker !== false) {
     const markerRegion = readRegionMarker(options.homeDir ?? defaultHomeDir(env));
     if (markerRegion !== undefined) return markerRegion;

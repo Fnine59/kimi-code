@@ -8,9 +8,10 @@
  *
  * Resolution lives in `@moonshot-ai/kimi-code-oauth` (see `resolveKimiRegion`);
  * this module only adds the one thing that package deliberately does not own:
- * reading the persisted login's `oauthHost` out of config.toml, synchronously,
- * via the SDK's safe config reader. First call wins; `refreshKimiRegion`
- * re-resolves after login/logout rewrote the oauth ref.
+ * reading the persisted login's oauth ref (credential key + `oauthHost`) out
+ * of config.toml, synchronously, via the SDK's safe config reader. First call
+ * wins; `refreshKimiRegion` re-resolves after login/logout rewrote the oauth
+ * ref.
  */
 
 import { loadRuntimeConfigSafe, resolveConfigPath } from '@moonshot-ai/kimi-code-sdk';
@@ -31,16 +32,29 @@ export const KIMI_CODE_OVERSEAS_PLATFORM_VALUE = 'kimi-code-overseas';
 
 let cached: KimiRegion | undefined;
 
-/** The oauth host persisted by a previous non-default login, if any. */
-export function persistedKimiOAuthHost(): string | undefined {
+export interface PersistedKimiOAuthRef {
+  readonly key: string;
+  readonly oauthHost?: string;
+}
+
+/** The oauth ref persisted by a previous login, if any. */
+export function persistedKimiOAuthRef(): PersistedKimiOAuthRef | undefined {
   const result = loadRuntimeConfigSafe(resolveConfigPath({}));
   // `providers` is always present on a real config load; the `?.` guards
   // hosts/tests that hand us a partial config shape.
-  return result.config.providers?.[MANAGED_KIMI_CODE_PROVIDER_KEY]?.oauth?.oauthHost;
+  const oauth = result.config.providers?.[MANAGED_KIMI_CODE_PROVIDER_KEY]?.oauth;
+  if (oauth === undefined) return undefined;
+  return { key: oauth.key, oauthHost: oauth.oauthHost };
 }
 
 export function currentKimiRegion(): KimiRegion {
-  cached ??= resolveKimiRegion({ configuredOAuthHost: persistedKimiOAuthHost() });
+  if (cached === undefined) {
+    const persisted = persistedKimiOAuthRef();
+    cached = resolveKimiRegion({
+      configuredOAuthHost: persisted?.oauthHost,
+      configuredOAuthKey: persisted?.key,
+    });
+  }
   return cached;
 }
 

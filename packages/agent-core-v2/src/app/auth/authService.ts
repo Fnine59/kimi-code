@@ -412,9 +412,10 @@ export class OAuthService extends Disposable implements IOAuthService {
   }
 
   getRegion(): KimiRegion {
-    const configured = this.providerService.get(KIMI_CODE_PROVIDER_NAME)?.oauth?.oauthHost;
+    const oauth = this.providerService.get(KIMI_CODE_PROVIDER_NAME)?.oauth;
     return resolveKimiRegion({
-      configuredOAuthHost: configured,
+      configuredOAuthHost: oauth?.oauthHost,
+      configuredOAuthKey: oauth?.key,
       readMarker: process.env['KIMI_CODE_REGION_MARKER'] !== 'off',
     });
   }

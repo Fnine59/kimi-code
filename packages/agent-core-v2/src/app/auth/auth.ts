@@ -63,9 +63,10 @@ export interface IOAuthService {
   resolveTokenProvider(provider: string, oauthRef?: OAuthRef): BearerTokenProvider | undefined;
   getCachedAccessToken(provider: string, oauthRef?: OAuthRef): Promise<string | undefined>;
   /**
-   * Resolve the client's region (env override → persisted login → install
-   * marker → 'cn'). Hosts that must ignore the install marker set
-   * `KIMI_CODE_REGION_MARKER=off` (e.g. the desktop app's embedded server).
+   * Resolve the client's region (env override → persisted login host →
+   * persisted default-slot login key → install marker → 'cn'). Hosts that
+   * must ignore the install marker set `KIMI_CODE_REGION_MARKER=off` (e.g.
+   * the desktop app's embedded server).
    */
   getRegion(): KimiRegion;
 }

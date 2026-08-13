@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_KIMI_CODE_OAUTH_HOST } from '#/constants';
+import { KIMI_CODE_OAUTH_KEY } from '#/managed-kimi-code';
 import { DEFAULT_KIMI_CODE_BASE_URL } from '#/managed-usage';
 import {
   KIMI_REGION_MARKER_FILENAME,
@@ -129,6 +130,38 @@ describe('resolveKimiRegion', () => {
         env: {},
         configuredOAuthHost: 'https://auth.kimi.ai',
         homeDir: dir,
+      }),
+    ).toBe('overseas');
+  });
+
+  it('treats the persisted default-slot key as explicit cn, beating the marker', async () => {
+    const dir = await markerDir('overseas');
+    expect(
+      resolveKimiRegion({ env: {}, configuredOAuthKey: KIMI_CODE_OAUTH_KEY, homeDir: dir }),
+    ).toBe('cn');
+  });
+
+  it('still follows the marker when no key or host is persisted', async () => {
+    expect(resolveKimiRegion({ env: {}, homeDir: await markerDir('overseas') })).toBe('overseas');
+  });
+
+  it('lets an unknown scoped key fall through to the marker', async () => {
+    const dir = await markerDir('overseas');
+    expect(
+      resolveKimiRegion({
+        env: {},
+        configuredOAuthKey: 'oauth/kimi-code-env-0123456789abcdef',
+        homeDir: dir,
+      }),
+    ).toBe('overseas');
+  });
+
+  it('resolves a recognized persisted host before consulting the key', () => {
+    expect(
+      resolveKimiRegion({
+        env: {},
+        configuredOAuthHost: 'https://auth.kimi.ai',
+        configuredOAuthKey: KIMI_CODE_OAUTH_KEY,
       }),
     ).toBe('overseas');
   });

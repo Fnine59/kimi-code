@@ -447,6 +447,22 @@ describe('OAuthService', () => {
     }
   });
 
+  it('getRegion resolves cn from the default-slot oauth ref despite an overseas marker', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kimi-v2-auth-region-'));
+    try {
+      await writeFile(join(home, 'region'), 'overseas\n', 'utf-8');
+      vi.stubEnv('KIMI_CODE_HOME', home);
+      vi.stubEnv('KIMI_CODE_OAUTH_HOST', '');
+      providers[OAUTH_PROVIDER] = {
+        type: 'kimi',
+        oauth: { storage: 'file', key: 'oauth/kimi-code' },
+      };
+      expect(createService().getRegion()).toBe('cn');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('resolves the runtime credential slot to the env environment after an env-scoped login', async () => {
     vi.stubEnv('KIMI_CODE_BASE_URL', 'https://env-api.example.com/coding/v1');
     vi.stubEnv('KIMI_CODE_OAUTH_HOST', 'https://env-auth.example.com');
