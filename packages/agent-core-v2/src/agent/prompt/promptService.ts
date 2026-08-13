@@ -327,7 +327,13 @@ export class AgentPromptService extends Disposable implements IAgentPromptServic
   }
 
   list(): PromptQueueSnapshot {
-    return { active: this.active === undefined ? undefined : snapshot(this.active), pending: this.pending.map(snapshot) };
+    // startNext shifts the launching record out of `pending` before its media
+    // intake settles; keep reporting it as queued during that window so the
+    // snapshot never loses an accepted (and abortable) submission between the
+    // `prompt.queued` event and `turn.started`.
+    const pending = this.pending.map(snapshot);
+    if (this.launchingItem !== undefined) pending.unshift(snapshot(this.launchingItem));
+    return { active: this.active === undefined ? undefined : snapshot(this.active), pending };
   }
 
   async steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {

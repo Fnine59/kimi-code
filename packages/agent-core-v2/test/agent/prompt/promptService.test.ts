@@ -541,7 +541,10 @@ describe('AgentPromptService daemon media intake', () => {
     const handle = await enqueueMedia(prompt, { id: 'media-idle-first', fileId: 'f_slow' });
 
     expect(handle.state).toBe('pending');
-    expect(prompt.list()).toEqual({ active: undefined, pending: [] });
+    // Launching but not yet active: the record stays listed as queued during
+    // the intake window so `list()` never loses an accepted submission.
+    expect(prompt.list().active).toBeUndefined();
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['media-idle-first']);
     open();
     await expect(handle.launched).resolves.toBeDefined();
   });
@@ -601,7 +604,9 @@ describe('AgentPromptService daemon media intake', () => {
     const textHandle = prompt.enqueue({ id: 'text-second', message: message('plain') });
     const textRecord = await textHandle;
     expect(textRecord.state).toBe('pending');
-    expect(prompt.list().pending.map((item) => item.id)).toEqual(['text-second']);
+    // The media record is launching through its slow intake: still queued in
+    // the snapshot, ahead of the text prompt.
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['media-first', 'text-second']);
     open();
 
     const mediaRecord = await mediaHandle;
