@@ -1,3 +1,24 @@
+/**
+ * `contextMemory` shared contract types — message origins, `AgentContextData`,
+ * and the `ContextModel` fold state.
+ *
+ * `ContextState` is the `ContextModel` state: the folded messages plus the
+ * fold cursor (`ContextFoldState` — the reduction position of the loop-event
+ * fold across records: `pending` holds toolCallIds with no result yet,
+ * `deferred` holds entries appended while a tool exchange is still open,
+ * flushed once it closes to preserve assistant↔tool adjacency). The cursor
+ * lives in the state (not beside it) so every wholesale replacement — undo,
+ * clear, compaction — resets it structurally by returning `EMPTY_FOLD`.
+ * Plain data: arrays instead of Sets keep the state freeze- and JSON-safe.
+ * Generic over the entry type: the wire model folds `ContextMessage`s, while
+ * the display transcript folds time-stamped entries through the same kernel.
+ *
+ * `freezeContextState` deeply freezes a `ContextState` (the wire service only
+ * shallow-freezes the top-level object, which covered the consumer view back
+ * when the state WAS the messages array). `Object.freeze` returns the same
+ * reference, so the wire's reference-equality gate is unaffected.
+ */
+
 import type { ContentPart, Message } from '#/kosong/contract/message';
 
 import type { AgentTaskStatus } from '#/agent/task/task';
@@ -128,16 +149,6 @@ export interface AgentContextData {
   tokenCount: number;
 }
 
-/**
- * Fold cursor carried inside `ContextState` — the reduction position of the
- * loop-event fold across records. `pending` holds toolCallIds with no result
- * yet; `deferred` holds entries appended while a tool exchange is still open
- * (flushed once it closes, preserving assistant↔tool adjacency). Plain data:
- * arrays instead of Sets so the state stays freeze- and JSON-safe.
- *
- * Generic over the entry type: the wire model folds `ContextMessage`s, while
- * the display transcript folds time-stamped entries through the same kernel.
- */
 export interface ContextFoldState<E = ContextMessage> {
   readonly openStepUuid?: string;
   readonly pending: readonly string[];
@@ -149,22 +160,11 @@ export const EMPTY_FOLD: ContextFoldState<never> = Object.freeze({
   deferred: Object.freeze([]),
 });
 
-/**
- * `ContextModel` state: the folded messages plus the fold cursor. The cursor
- * lives in the state (not beside it) so every wholesale replacement — undo,
- * clear, compaction — resets it structurally, by returning `EMPTY_FOLD`.
- */
 export interface ContextState {
   readonly messages: readonly ContextMessage[];
   readonly fold: ContextFoldState;
 }
 
-/**
- * Deeply freezes a `ContextState` (the wire service only shallow-freezes the
- * top-level object, which covered the consumer view back when the state WAS
- * the messages array). `Object.freeze` returns the same reference, so the
- * wire's reference-equality gate is unaffected.
- */
 export function freezeContextState(state: ContextState): ContextState {
   const { fold } = state;
   Object.freeze(fold.pending);

@@ -42,11 +42,13 @@
  * wholesale state replacement (undo / clear / compaction) resets the cursor
  * structurally by returning `EMPTY_FOLD`.
  *
- * The kernel is generic over the entry type (`FoldFrame<E>` +
- * `FoldEntryAdapter<E>`): the wire model folds bare `ContextMessage`s
- * (`foldAppendMessage` / `foldLoopEvent` specializations below), while the
- * display transcript (`contextTranscript.ts`) folds time-stamped entries —
- * one reduction semantics, two read models.
+ * The kernel is generic over the entry type: a `FoldFrame<E>` pairs the
+ * entries reduced so far with the fold cursor, and a `FoldEntryAdapter<E>`
+ * is how the kernel reads and rewrites the message an entry carries. The
+ * wire model folds bare `ContextMessage`s (`foldAppendMessage` /
+ * `foldLoopEvent` specializations below), while the display transcript
+ * (`contextTranscript.ts`) folds time-stamped entries — one reduction
+ * semantics, two read models.
  */
 
 import type { FinishReason } from '#/kosong/contract/provider';
@@ -113,13 +115,11 @@ export type LoopRecordedEvent =
       readonly parentUuid?: string;
     };
 
-/** A fold position: the entries reduced so far plus the fold cursor. */
 export interface FoldFrame<E> {
   readonly messages: readonly E[];
   readonly fold: ContextFoldState<E>;
 }
 
-/** How the kernel reads and rewrites the message carried by an entry. */
 export interface FoldEntryAdapter<E> {
   readonly messageOf: (entry: E) => ContextMessage;
   readonly withMessage: (entry: E, message: ContextMessage) => E;
