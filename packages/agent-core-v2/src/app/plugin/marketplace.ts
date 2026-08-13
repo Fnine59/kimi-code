@@ -93,8 +93,6 @@ export function computeUpdateStatus(
   ) {
     return { kind: 'update', local, latest };
   }
-  // Report only the actual installed version. When it is unknown, don't borrow the
-  // marketplace version — that would falsely claim "up to date" and hide future updates.
   return { kind: 'up-to-date', version: local };
 }
 
@@ -284,10 +282,6 @@ function deriveVersionFromGithubSource(source: string): string | undefined {
   if (url.hostname !== 'github.com' && url.hostname !== 'www.github.com') {
     return undefined;
   }
-  // Pathname shape: /<owner>/<repo>/<tail...>. Recognized tails:
-  //   releases/tag/<tag>
-  //   tree/<ref>
-  //   commit/<sha>
   const [, , kind, a, b] = url.pathname.split('/').filter(Boolean);
   const ref =
     kind === 'releases' && a === 'tag' ? b : kind === 'tree' || kind === 'commit' ? a : undefined;
@@ -326,8 +320,6 @@ function parseGithubRepo(source: string): { owner: string; repo: string } | unde
     return undefined;
   }
   if (url.hostname !== 'github.com' && url.hostname !== 'www.github.com') return undefined;
-  // Only bare repo URLs (/<owner>/<repo>) qualify — URLs with a ref tail are
-  // already handled by deriveVersionFromGithubSource.
   const segments = url.pathname.split('/').filter(Boolean);
   if (segments.length !== 2) return undefined;
   const [owner, repo] = segments;
@@ -339,10 +331,6 @@ async function fetchLatestReleaseTag(
   repo: string,
   fetchImpl: typeof fetch,
 ): Promise<string | undefined> {
-  // Avoid api.github.com: its anonymous quota is shared with the user's browser
-  // and other tools, and a first-time lookup failing because something else
-  // burned the budget is unacceptable. The /releases/latest UI route 302s to
-  // the tag and is not part of the API quota.
   const url = `https://github.com/${owner}/${repo}/releases/latest`;
   const resp = await fetchImpl(url, { redirect: 'manual' });
   if (resp.status === 404) return undefined;
