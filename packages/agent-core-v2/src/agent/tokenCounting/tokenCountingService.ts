@@ -134,7 +134,7 @@ export class AgentTokenCountingService extends Disposable implements IAgentToken
   }
 
   private context(): readonly ContextMessage[] {
-    return this.wire.getModel(ContextModel) as readonly ContextMessage[];
+    return this.wire.getModel(ContextModel).messages as readonly ContextMessage[];
   }
 
   /** Latest anchor still valid for the live context: anchors beyond it are

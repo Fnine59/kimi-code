@@ -23,7 +23,7 @@ import {
   contextClear,
   contextUndo,
 } from '#/agent/contextMemory/contextOps';
-import type { ContextMessage } from '#/agent/contextMemory/types';
+import { EMPTY_FOLD, type ContextMessage } from '#/agent/contextMemory/types';
 import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
 import type { ContentPart } from '#/kosong/contract/message';
@@ -186,7 +186,7 @@ afterEach(() => disposables.dispose());
 describe('AgentContextMemoryService (wire-backed)', () => {
   it('splice/append/undo/apply_compaction/clear/append_loop_event each update getModel with a NEW reference and persist flat records', async () => {
     const host = buildHost(KEY);
-    const model = () => host.wire.getModel(ContextModel) as readonly ContextMessage[];
+    const model = () => host.wire.getModel(ContextModel).messages as readonly ContextMessage[];
 
     host.wire.dispatch(
       contextAppendMessage({ message: userMessage('a') }),
@@ -203,6 +203,7 @@ describe('AgentContextMemoryService (wire-backed)', () => {
     host.wire.dispatch(contextUndo({ count: 1 }));
     expect(model()).not.toBe(prev);
     expect(model()).toHaveLength(2);
+    expect(host.wire.getModel(ContextModel).fold).toEqual(EMPTY_FOLD);
 
     prev = model();
     host.wire.dispatch(
@@ -215,11 +216,13 @@ describe('AgentContextMemoryService (wire-backed)', () => {
       content: [{ type: 'text', text: 'sum' }],
       origin: { kind: 'compaction_summary' },
     });
+    expect(host.wire.getModel(ContextModel).fold).toEqual(EMPTY_FOLD);
 
     prev = model();
     host.wire.dispatch(contextClear({}));
     expect(model()).not.toBe(prev);
     expect(model()).toHaveLength(0);
+    expect(host.wire.getModel(ContextModel).fold).toEqual(EMPTY_FOLD);
 
     await host.wire.flush();
     const records = await readRecords(host.log);
@@ -282,7 +285,7 @@ describe('AgentContextMemoryService (wire-backed)', () => {
       records,
     );
 
-    const model = replay.wire.getModel(ContextModel) as readonly ContextMessage[];
+    const model = replay.wire.getModel(ContextModel).messages as readonly ContextMessage[];
     expect(model.map((message) => message.role)).toEqual(['user', 'assistant', 'tool']);
     expect(model[1]!.content).toEqual([{ type: 'text', text: 'hello' }]);
     expect(model[1]!.partial).toBeUndefined();
@@ -315,7 +318,7 @@ describe('AgentContextMemoryService (wire-backed)', () => {
       records,
     );
 
-    const model = replay.wire.getModel(ContextModel) as readonly ContextMessage[];
+    const model = replay.wire.getModel(ContextModel).messages as readonly ContextMessage[];
     expect(model.map(textOf)).toEqual(['model-facing summary', 'tail']);
     expect(model[0]).toMatchObject({
       role: 'user',
@@ -354,7 +357,7 @@ describe('AgentContextMemoryService (wire-backed)', () => {
       records,
     );
 
-    const model = replay.wire.getModel(ContextModel) as readonly ContextMessage[];
+    const model = replay.wire.getModel(ContextModel).messages as readonly ContextMessage[];
     expect(model.map((message) => message.role)).toEqual(['user', 'user', 'user']);
     expect(model.map(textOf)).toEqual(['old user', 'recent user', 'model-facing summary']);
     expect(model[2]).toMatchObject({
@@ -384,7 +387,7 @@ describe('AgentContextMemoryService (wire-backed)', () => {
       records,
     );
 
-    const model = replay.wire.getModel(ContextModel) as readonly ContextMessage[];
+    const model = replay.wire.getModel(ContextModel).messages as readonly ContextMessage[];
     expect(model.map(textOf)).toEqual(['old user', 'recent user', 'OLD SUMMARY']);
     expect(model[2]).toMatchObject({
       role: 'user',
@@ -417,7 +420,7 @@ describe('AgentContextMemoryService (wire-backed)', () => {
       records,
     );
 
-    const model = replay.wire.getModel(ContextModel) as readonly ContextMessage[];
+    const model = replay.wire.getModel(ContextModel).messages as readonly ContextMessage[];
     expect(model).toHaveLength(2);
     expect(model[0]).toEqual(legacySummary);
     expect(textOf(model[1]!)).toBe('tail');
@@ -431,7 +434,7 @@ describe('AgentContextMemoryService (wire-backed)', () => {
     host.wire.dispatch(contextAppendMessage({ message: imageMessage(big) }));
     await host.wire.flush();
 
-    const live = host.wire.getModel(ContextModel) as readonly ContextMessage[];
+    const live = host.wire.getModel(ContextModel).messages as readonly ContextMessage[];
     expect(live).toHaveLength(1);
     expect(mediaUrl(live[0]!)).toBe(dataUri);
 
@@ -452,7 +455,7 @@ describe('AgentContextMemoryService (wire-backed)', () => {
     );
     expect(blob.loadCalls).toBeGreaterThanOrEqual(1);
 
-    const rebuilt = replay.wire.getModel(ContextModel) as readonly ContextMessage[];
+    const rebuilt = replay.wire.getModel(ContextModel).messages as readonly ContextMessage[];
     expect(rebuilt).toEqual(live);
     expect(mediaUrl(rebuilt[0]!)).toBe(dataUri);
   });
@@ -482,7 +485,7 @@ describe('AgentContextMemoryService (wire-backed)', () => {
       records,
     );
     expect(replayed).toHaveLength(0);
-    expect(replay.wire.getModel(ContextModel) as readonly ContextMessage[]).toHaveLength(2);
+    expect(replay.wire.getModel(ContextModel).messages as readonly ContextMessage[]).toHaveLength(2);
   });
 
 });

@@ -9,11 +9,26 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  createContextTranscriptReducer,
   reduceContextTranscript,
   type ContextTranscript,
 } from '#/agent/contextMemory/contextTranscript';
-import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
-import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
+import {
+  contextApplyCompaction,
+  contextClear,
+  contextUndo,
+} from '#/agent/contextMemory/contextOps';
+import {
+  foldAppendMessage,
+  foldLoopEvent,
+  type LoopRecordedEvent,
+} from '#/agent/contextMemory/loopEventFold';
+import {
+  EMPTY_FOLD,
+  type ContextMessage,
+  type ContextState,
+  type PromptOrigin,
+} from '#/agent/contextMemory/types';
 import type { WireRecord } from '#/wire/record';
 
 function userMessage(text: string, origin?: PromptOrigin): ContextMessage {
@@ -290,5 +305,107 @@ describe('reduceContextTranscript', () => {
     ]);
     expect(result.entries.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant', 'assistant']);
     expect(result.foldedLength).toBe(4);
+  });
+});
+
+describe('transcript/model fold parity', () => {
+  function applyRecordToModel(state: ContextState, record: WireRecord): ContextState {
+    switch (record.type) {
+      case 'context.append_message':
+        return foldAppendMessage(state, record['message'] as ContextMessage);
+      case 'context.append_loop_event':
+        return foldLoopEvent(state, record['event'] as LoopRecordedEvent);
+      case 'context.undo':
+        return contextUndo.apply(state, { count: record['count'] as number });
+      case 'context.clear':
+        return contextClear.apply(state, {});
+      case 'context.apply_compaction':
+        return contextApplyCompaction.apply(
+          state,
+          record as unknown as Parameters<typeof contextApplyCompaction.apply>[1],
+        );
+      default:
+        return state;
+    }
+  }
+
+  function currentOf(result: ContextTranscript): readonly ContextMessage[] {
+    return result.entries.slice(result.entries.length - result.foldedLength);
+  }
+
+  function comparable(messages: readonly ContextMessage[]): unknown {
+    return messages.map((m) => ({
+      role: m.role,
+      // The model-facing compaction summary text (contextSummary) differs from
+      // the display-facing one (summary) by design — mask it.
+      content: m.origin?.kind === 'compaction_summary' ? '<summary>' : m.content,
+      toolCalls: m.toolCalls,
+      toolCallId: m.toolCallId,
+      isError: m.isError,
+      note: m.note,
+      origin: m.origin,
+      partial: m.partial,
+    }));
+  }
+
+  // Asserts after EVERY prefix of the stream that the transcript's current
+  // conversation (the tail of `foldedLength` entries) matches the model fold.
+  // Compaction pauses the check until the next clear: the display's
+  // foldedLength is a UI collapse metric (kept users + summary marker, and
+  // legacy records put the summary first in the model but last in the
+  // display), so the two views diverge there BY DESIGN; clear realigns them.
+  function expectParity(records: WireRecord[]): void {
+    let state: ContextState = { messages: [], fold: EMPTY_FOLD };
+    const reducer = createContextTranscriptReducer();
+    let aligned = true;
+    for (const record of records) {
+      state = applyRecordToModel(state, record);
+      reducer.add(record);
+      if (record.type === 'context.apply_compaction') aligned = false;
+      if (record.type === 'context.clear') aligned = true;
+      if (!aligned) continue;
+      const result = reducer.result();
+      expect(comparable(currentOf(result))).toEqual(comparable(state.messages));
+    }
+  }
+
+  it('matches across retries, mid-exchange deferral, undo, compaction, and clear', () => {
+    expectParity([
+      appendMessage(userMessage('u1', { kind: 'user' })),
+      ...assistantStep('s1', 'a1'),
+      // s2: a failed attempt left open (content + unanswered tool call)…
+      loopEvent({ type: 'step.begin', uuid: 's2' }),
+      loopEvent({ type: 'content.part', stepUuid: 's2', part: { type: 'text', text: 'half' } }),
+      loopEvent({ type: 'tool.call', stepUuid: 's2', toolCallId: 'c1', name: 'Bash', args: {} }),
+      // …settled by the retry's step.begin, then s3 runs a full exchange…
+      loopEvent({ type: 'step.begin', uuid: 's3' }),
+      loopEvent({ type: 'content.part', stepUuid: 's3', part: { type: 'text', text: 'a3' } }),
+      loopEvent({ type: 'tool.call', stepUuid: 's3', toolCallId: 'c2', name: 'Read', args: {} }),
+      // …during which a plain append is deferred until the exchange closes.
+      appendMessage(userMessage('injected mid-exchange')),
+      loopEvent({ type: 'tool.result', toolCallId: 'c2', result: { output: 'ok' } }),
+      loopEvent({ type: 'step.end', uuid: 's3' }),
+      appendMessage(userMessage('u2', { kind: 'user' })),
+      undo(1),
+      // keptUserMessageCount = the 2 compactable user messages ('u1' and the
+      // origin-less 'injected mid-exchange') so the model keeps both.
+      compaction('SUM', 7, 2),
+      appendMessage(userMessage('u3', { kind: 'user' })),
+      { type: 'context.clear' },
+      ...assistantStep('s4', 'a4'),
+    ]);
+  });
+
+  it('matches when a tool exchange is interrupted without a retry', () => {
+    expectParity([
+      appendMessage(userMessage('q', { kind: 'user' })),
+      loopEvent({ type: 'step.begin', uuid: 's1' }),
+      loopEvent({ type: 'tool.call', stepUuid: 's1', toolCallId: 'c1', name: 'Bash', args: {} }),
+      // resume without a result: the next user message closes the exchange…
+      appendMessage(userMessage('next', { kind: 'user' })),
+      ...assistantStep('s2', 'done'),
+      undo(1),
+      undo(1),
+    ]);
   });
 });

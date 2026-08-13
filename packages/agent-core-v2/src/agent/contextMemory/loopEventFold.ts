@@ -1,6 +1,7 @@
 /**
- * `contextMemory` loop-event fold — reduction of `context.append_loop_event`
- * records into folded `ContextMessage`s.
+ * `contextMemory` loop-event fold — the single kernel that reduces
+ * `context.append_loop_event` / `context.append_message` records into folded
+ * conversation entries.
  *
  * The agent loop streams a turn as `context.append_loop_event` records
  * (`step.begin` / `content.part` / `tool.call` / `tool.result` / `step.end`)
@@ -31,18 +32,28 @@
  * A `context.append_message` reduced while a tool exchange is still open is
  * deferred and flushed once the exchange closes, so strict-provider
  * assistant↔tool adjacency is preserved.
+ * Events tagged with a step uuid that is not the open one (a late event of an
+ * attempt whose `step.begin` was already settled) are dropped, and a
+ * `step.end` only settles the step it names.
  *
- * The fold is stateful across records within one replay. State is carried in a
- * `WeakMap` keyed by each evolving state array, so the public
- * `wire.getModel(ContextModel)` view stays a plain `ContextMessage[]` and
- * concurrent replays of different agent scopes never share fold state.
+ * The fold is stateful across records within one replay; the cursor
+ * (`openStepUuid` / `pending` / `deferred`) is part of the frame's `fold`
+ * field, so live dispatch and replay share one pure transition, and every
+ * wholesale state replacement (undo / clear / compaction) resets the cursor
+ * structurally by returning `EMPTY_FOLD`.
+ *
+ * The kernel is generic over the entry type (`FoldFrame<E>` +
+ * `FoldEntryAdapter<E>`): the wire model folds bare `ContextMessage`s
+ * (`foldAppendMessage` / `foldLoopEvent` specializations below), while the
+ * display transcript (`contextTranscript.ts`) folds time-stamped entries —
+ * one reduction semantics, two read models.
  */
 
 import type { FinishReason } from '#/kosong/contract/provider';
 import { createToolMessage, type ContentPart, type ToolCall } from '#/kosong/contract/message';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
-import type { ContextMessage } from './types';
+import type { ContextFoldState, ContextMessage, ContextState } from './types';
 import { isVacuousContentPart } from './vacuousContent';
 
 const TOOL_INTERRUPTED_ON_RESUME_OUTPUT =
@@ -102,63 +113,78 @@ export type LoopRecordedEvent =
       readonly parentUuid?: string;
     };
 
-interface FoldCtx {
-  openStepUuid: string | undefined;
-  pending: Set<string>;
-  deferred: ContextMessage[];
+/** A fold position: the entries reduced so far plus the fold cursor. */
+export interface FoldFrame<E> {
+  readonly messages: readonly E[];
+  readonly fold: ContextFoldState<E>;
 }
 
-const foldCtxMap = new WeakMap<object, FoldCtx>();
+/** How the kernel reads and rewrites the message carried by an entry. */
+export interface FoldEntryAdapter<E> {
+  readonly messageOf: (entry: E) => ContextMessage;
+  readonly withMessage: (entry: E, message: ContextMessage) => E;
+}
 
-function ctxOf(state: readonly ContextMessage[]): FoldCtx {
-  let ctx = foldCtxMap.get(state);
-  if (ctx === undefined) {
-    ctx = { openStepUuid: undefined, pending: new Set(), deferred: [] };
-    foldCtxMap.set(state, ctx);
+const messageAdapter: FoldEntryAdapter<ContextMessage> = {
+  messageOf: (entry) => entry,
+  withMessage: (_entry, message) => message,
+};
+
+export function foldAppendMessage(state: ContextState, message: ContextMessage): ContextState {
+  return appendMessageTo(state, message);
+}
+
+export function foldLoopEvent(state: ContextState, event: LoopRecordedEvent): ContextState {
+  return applyLoopEventTo(state, event, messageAdapter, (message) => message);
+}
+
+export function appendMessageTo<E>(frame: FoldFrame<E>, entry: E): FoldFrame<E> {
+  const { fold } = frame;
+  if (fold.pending.length > 0) {
+    return { ...frame, fold: { ...fold, deferred: [...fold.deferred, entry] } };
   }
-  return ctx;
+  return { ...frame, messages: [...frame.messages, entry] };
 }
 
-function bind(state: readonly ContextMessage[], ctx: FoldCtx): readonly ContextMessage[] {
-  foldCtxMap.set(state, ctx);
-  return state;
-}
-
-export function foldAppendMessage(
-  state: readonly ContextMessage[],
-  message: ContextMessage,
-): readonly ContextMessage[] {
-  const ctx = ctxOf(state);
-  if (ctx.pending.size > 0) {
-    ctx.deferred.push(message);
-    return state;
-  }
-  return bind([...state, message], ctx);
-}
-
-export function foldLoopEvent(
-  state: readonly ContextMessage[],
+export function applyLoopEventTo<E>(
+  frame: FoldFrame<E>,
   event: LoopRecordedEvent,
-): readonly ContextMessage[] {
-  const ctx = ctxOf(state);
+  adapter: FoldEntryAdapter<E>,
+  makeEntry: (message: ContextMessage) => E,
+): FoldFrame<E> {
+  const { fold } = frame;
   switch (event.type) {
     case 'step.begin': {
-      const settled = settleOpenStep(state, ctx);
-      const assistant: ContextMessage = { role: 'assistant', content: [], toolCalls: [], partial: true };
-      ctx.openStepUuid = event.uuid;
-      return bind([...settled, assistant], ctx);
+      const settled = settleOpenStep(frame, adapter, makeEntry);
+      const assistant: ContextMessage = {
+        role: 'assistant',
+        content: [],
+        toolCalls: [],
+        partial: true,
+      };
+      return {
+        messages: [...settled.messages, makeEntry(assistant)],
+        fold: { ...settled.fold, openStepUuid: event.uuid },
+      };
     }
     case 'step.end': {
-      ctx.openStepUuid = undefined;
-      const s = settleOpenStep(state, ctx);
-      return bind(flushDeferred(s, ctx), ctx);
+      if (fold.openStepUuid !== event.uuid) return flushDeferred(frame);
+      const settled = settleOpenStep(
+        { ...frame, fold: { ...fold, openStepUuid: undefined } },
+        adapter,
+        makeEntry,
+      );
+      return flushDeferred(settled);
     }
-    case 'content.part':
-      return bind(appendToOpenAssistant(state, (message) => ({
+    case 'content.part': {
+      if (fold.openStepUuid !== event.stepUuid) return frame;
+      return updateOpenAssistant(frame, adapter, (message) => ({
         ...message,
         content: [...message.content, event.part],
-      })), ctx);
+      }));
+    }
     case 'tool.call': {
+      if (fold.openStepUuid !== event.stepUuid) return frame;
       const call: ToolCall = {
         type: 'function',
         id: event.toolCallId,
@@ -166,82 +192,93 @@ export function foldLoopEvent(
         arguments: event.args === undefined ? null : JSON.stringify(event.args),
         ...(event.extras !== undefined ? { extras: event.extras } : {}),
       };
-      ctx.pending.add(event.toolCallId);
-      return bind(appendToOpenAssistant(state, (message) => ({
+      const withPending: FoldFrame<E> = {
+        ...frame,
+        fold: { ...fold, pending: [...fold.pending, event.toolCallId] },
+      };
+      return updateOpenAssistant(withPending, adapter, (message) => ({
         ...message,
         toolCalls: [...message.toolCalls, call],
-      })), ctx);
+      }));
     }
     case 'tool.result': {
-      if (!ctx.pending.has(event.toolCallId)) return state;
+      if (!fold.pending.includes(event.toolCallId)) return frame;
       const output = event.result.output;
       const toolMessage: ContextMessage = {
         ...createToolMessage(event.toolCallId, typeof output === 'string' ? output : [...output]),
         isError: event.result.isError,
         note: event.result.note,
       };
-      ctx.pending.delete(event.toolCallId);
-      return bind(flushDeferred([...state, toolMessage], ctx), ctx);
+      const next: FoldFrame<E> = {
+        messages: [...frame.messages, makeEntry(toolMessage)],
+        fold: { ...fold, pending: fold.pending.filter((id) => id !== event.toolCallId) },
+      };
+      return flushDeferred(next);
     }
     default:
-      return state;
+      return frame;
   }
 }
 
-export function resetFold(state: readonly ContextMessage[]): readonly ContextMessage[] {
-  foldCtxMap.set(state, { openStepUuid: undefined, pending: new Set(), deferred: [] });
-  return state;
-}
-
-function appendToOpenAssistant(
-  state: readonly ContextMessage[],
+function updateOpenAssistant<E>(
+  frame: FoldFrame<E>,
+  adapter: FoldEntryAdapter<E>,
   update: (message: ContextMessage) => ContextMessage,
-): readonly ContextMessage[] {
-  const index = findOpenAssistantIndex(state);
-  if (index === -1) return state;
-  const next = state.slice();
-  next[index] = update(next[index]!);
-  return next;
+): FoldFrame<E> {
+  const index = findOpenAssistantIndex(frame, adapter);
+  if (index === -1) return frame;
+  const messages = frame.messages.slice();
+  messages[index] = adapter.withMessage(messages[index]!, update(adapter.messageOf(messages[index]!)));
+  return { ...frame, messages };
 }
 
-function settleOpenStep(
-  state: readonly ContextMessage[],
-  ctx: FoldCtx,
-): readonly ContextMessage[] {
-  const closed = closePending(state, ctx);
-  const index = findOpenAssistantIndex(closed);
+function settleOpenStep<E>(
+  frame: FoldFrame<E>,
+  adapter: FoldEntryAdapter<E>,
+  makeEntry: (message: ContextMessage) => E,
+): FoldFrame<E> {
+  const closed = closePending(frame, makeEntry);
+  const index = findOpenAssistantIndex(closed, adapter);
   if (index === -1) return closed;
-  const open = closed[index]!;
+  const open = adapter.messageOf(closed.messages[index]!);
   if (open.toolCalls.length === 0 && open.content.every(isVacuousContentPart)) {
-    return [...closed.slice(0, index), ...closed.slice(index + 1)];
+    return {
+      ...closed,
+      messages: [...closed.messages.slice(0, index), ...closed.messages.slice(index + 1)],
+    };
   }
-  const next = closed.slice();
-  next[index] = { ...open, partial: undefined };
-  return next;
+  const messages = closed.messages.slice();
+  messages[index] = adapter.withMessage(messages[index]!, { ...open, partial: undefined });
+  return { ...closed, messages };
 }
 
-function findOpenAssistantIndex(state: readonly ContextMessage[]): number {
-  for (let i = state.length - 1; i >= 0; i--) {
-    if (state[i]!.partial === true) return i;
+function findOpenAssistantIndex<E>(frame: FoldFrame<E>, adapter: FoldEntryAdapter<E>): number {
+  for (let i = frame.messages.length - 1; i >= 0; i--) {
+    if (adapter.messageOf(frame.messages[i]!).partial === true) return i;
   }
   return -1;
 }
 
-function closePending(state: readonly ContextMessage[], ctx: FoldCtx): readonly ContextMessage[] {
-  if (ctx.pending.size === 0) return state;
-  const next = state.slice();
-  for (const toolCallId of ctx.pending) {
-    next.push(interruptedToolMessage(toolCallId));
+function closePending<E>(
+  frame: FoldFrame<E>,
+  makeEntry: (message: ContextMessage) => E,
+): FoldFrame<E> {
+  const { fold } = frame;
+  if (fold.pending.length === 0) return frame;
+  const messages = frame.messages.slice();
+  for (const toolCallId of fold.pending) {
+    messages.push(makeEntry(interruptedToolMessage(toolCallId)));
   }
-  ctx.pending.clear();
-  return flushDeferred(next, ctx);
+  return flushDeferred({ ...frame, messages, fold: { ...fold, pending: [] } });
 }
 
-function flushDeferred(state: readonly ContextMessage[], ctx: FoldCtx): readonly ContextMessage[] {
-  if (ctx.pending.size > 0 || ctx.deferred.length === 0) return state;
-  const next = [...state, ...ctx.deferred];
-  ctx.deferred.length = 0;
-  return next;
+function flushDeferred<E>(frame: FoldFrame<E>): FoldFrame<E> {
+  const { fold } = frame;
+  if (fold.pending.length > 0 || fold.deferred.length === 0) return frame;
+  return {
+    messages: [...frame.messages, ...fold.deferred],
+    fold: { ...fold, deferred: [] },
+  };
 }
 
 function interruptedToolMessage(toolCallId: string): ContextMessage {

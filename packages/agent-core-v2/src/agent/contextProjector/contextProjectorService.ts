@@ -15,14 +15,13 @@
  * repair-dedup signature (`lastRepairSignature`) is registered into
  * `agentState` (`IAgentStateService`) and read/written through it.
  *
- * `projectMediaDegraded` / `projectMediaStripped` are the fallback
- * projections for the two deterministic provider rejections: media-degraded
- * (all but the most recent media replaced by text markers) resends after an
- * HTTP 413 body-size rejection; media-stripped captures every media identity
- * present when degraded media is still too large or an image format is
- * rejected, then replaces only that snapshot on later steps so a newly
- * generated recovery image remains visible. Both are read-side only — the
- * history keeps its media.
+ * `policy.media` selects the fallback projections for the two deterministic
+ * provider rejections: `'degraded'` (all but the most recent media replaced
+ * by text markers) resends after an HTTP 413 body-size rejection;
+ * `{ strip }` replaces only the snapshotted media identities present when
+ * degraded media is still too large or an image format is rejected, so a
+ * newly generated recovery image remains visible on later steps. Both are
+ * read-side only — the history keeps its media.
  */
 
 import { createHash } from 'node:crypto';
@@ -40,6 +39,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import {
   IAgentContextProjectorService,
   type MediaStripSnapshot,
+  type ProjectionPolicy,
 } from './contextProjector';
 
 export const contextProjectorLastRepairSignatureKey = defineState<string | null>(
@@ -66,34 +66,22 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     this.states.set(contextProjectorLastRepairSignatureKey, value);
   }
 
-  project(messages: readonly ContextMessage[]): readonly Message[] {
-    return this.projectWithTrace(messages, project);
-  }
-
-  projectStrict(messages: readonly ContextMessage[]): readonly Message[] {
-    return this.projectWithTrace(messages, projectStrict);
-  }
-
-  projectMediaDegraded(messages: readonly ContextMessage[]): readonly Message[] {
-    return degradeOlderMediaParts(
-      this.projectWithTrace(messages, project),
-      MEDIA_DEGRADE_KEEP_RECENT,
+  project(
+    messages: readonly ContextMessage[],
+    policy: ProjectionPolicy = {},
+  ): readonly Message[] {
+    const projected = this.projectWithTrace(
+      messages,
+      policy.wire === 'strict' ? projectStrict : project,
     );
+    const media = policy.media;
+    if (media === undefined || media === 'keep') return projected;
+    if (media === 'degraded') return degradeOlderMediaParts(projected, MEDIA_DEGRADE_KEEP_RECENT);
+    return stripMediaPartsBySnapshot(projected, media.strip);
   }
 
   captureMediaStripSnapshot(messages: readonly ContextMessage[]): MediaStripSnapshot {
     return captureMediaStripSnapshot(this.projectWithTrace(messages, project));
-  }
-
-  projectMediaStripped(
-    messages: readonly ContextMessage[],
-    snapshot?: MediaStripSnapshot,
-  ): readonly Message[] {
-    const projected = this.projectWithTrace(messages, project);
-    return stripMediaPartsBySnapshot(
-      projected,
-      snapshot ?? captureMediaStripSnapshot(projected),
-    );
   }
 
   private projectWithTrace(

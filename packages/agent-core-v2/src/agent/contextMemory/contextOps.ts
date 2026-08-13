@@ -5,10 +5,14 @@
  * `context.undo` (`contextUndo`) / `context.append_loop_event`
  * (`contextAppendLoopEvent`) for the per-agent conversation history.
  *
- * Declares the history as `ContextMessage[]` (initial `[]`); every Op's `apply`
- * is a pure array transform that returns a NEW reference on change and the SAME
+ * Declares the history as `ContextState` — `{ messages, fold }`, initial
+ * `{ messages: [], fold: EMPTY_FOLD }`; every Op's `apply`
+ * is a pure transform that returns a NEW reference on change and the SAME
  * reference on a no-op (so the wire's reference-equality gate stays quiet), and
- * carries no non-determinism.
+ * carries no non-determinism. The loop-event fold cursor (`state.fold`) is part
+ * of the state, so wholesale replacements (undo / clear / compaction / the
+ * `swarm_mode.exit` pop) reset it by returning `EMPTY_FOLD` — there is no
+ * out-of-band reset to forget.
  *
  * The live write path emits the v1 Ops: non-loop appends (user prompts,
  * injections, hook/task notices) go on the wire as `append_message` (persisted
@@ -33,7 +37,8 @@
  *   passing each `ContentPart[]` through `transform` to offload oversized data
  *   URIs.
  * - `rehydrate(state, transform)`: after replay, traverses the surviving final
- *   state and loads `blobref:` URLs back to inline data — skipping I/O for
+ *   state (including still-deferred messages in the fold cursor) and loads
+ *   `blobref:` URLs back to inline data — skipping I/O for
  *   data that was compacted away during the session.
  */
 
@@ -54,13 +59,13 @@ import {
   isUndoAnchor,
   isValidUndoCount,
 } from './conversationTime';
+import { foldAppendMessage, foldLoopEvent, type LoopRecordedEvent } from './loopEventFold';
 import {
-  foldAppendMessage,
-  foldLoopEvent,
-  resetFold,
-  type LoopRecordedEvent,
-} from './loopEventFold';
-import type { ContextMessage } from './types';
+  EMPTY_FOLD,
+  freezeContextState,
+  type ContextMessage,
+  type ContextState,
+} from './types';
 
 async function dehydrateMessages(
   messages: readonly ContextMessage[],
@@ -111,25 +116,34 @@ async function dehydrateRecord(
   return record;
 }
 
-export const ContextModel = defineModel<ContextMessage[]>('contextMemory', () => [], {
-  blobs: {
-    dehydrate: dehydrateRecord,
-    rehydrate: async (state, transform) => {
-      const { changed, result } = await dehydrateMessages(state, transform);
-      return changed ? result : state;
+export const ContextModel = defineModel<ContextState>(
+  'contextMemory',
+  () => freezeContextState({ messages: [], fold: EMPTY_FOLD }),
+  {
+    blobs: {
+      dehydrate: dehydrateRecord,
+      rehydrate: async (state, transform) => {
+        const messages = await dehydrateMessages(state.messages, transform);
+        const deferred = await dehydrateMessages(state.fold.deferred, transform);
+        if (!messages.changed && !deferred.changed) return state;
+        return freezeContextState({
+          messages: messages.result,
+          fold: deferred.changed ? { ...state.fold, deferred: deferred.result } : state.fold,
+        });
+      },
+    },
+    reducers: {
+      'swarm_mode.exit': popSwarmModeReminder,
     },
   },
-  reducers: {
-    'swarm_mode.exit': popSwarmModeReminder,
-  },
-});
+);
 
-function popSwarmModeReminder(state: ContextMessage[], _payload: unknown): ContextMessage[] {
-  const last = state[state.length - 1];
+function popSwarmModeReminder(state: ContextState, _payload: unknown): ContextState {
+  const last = state.messages.at(-1);
   if (last === undefined) return state;
   const origin = last.origin;
   if (origin?.kind !== 'injection' || origin.variant !== 'swarm_mode') return state;
-  return resetFold(state.slice(0, -1)) as ContextMessage[];
+  return freezeContextState({ messages: state.messages.slice(0, -1), fold: EMPTY_FOLD });
 }
 
 declare module '#/wire/types' {
@@ -147,17 +161,25 @@ const loopRecordedEventSchema = z.custom<LoopRecordedEvent>();
 
 export const contextAppendMessage = ContextModel.defineOp('context.append_message', {
   schema: z.object({ message: contextMessageSchema }),
-  apply: (state, p) => foldAppendMessage(state, p.message) as ContextMessage[],
+  apply: (state, p) => freezeContextState(foldAppendMessage(state, p.message)),
 });
 
 export const contextAppendLoopEvent = ContextModel.defineOp('context.append_loop_event', {
   schema: z.object({ event: loopRecordedEventSchema }),
-  apply: (state, p) => foldLoopEvent(state, p.event) as ContextMessage[],
+  apply: (state, p) => freezeContextState(foldLoopEvent(state, p.event)),
 });
 
 export const contextClear = ContextModel.defineOp('context.clear', {
   schema: z.object({}),
-  apply: (state) => (state.length === 0 ? state : (resetFold([]) as ContextMessage[])),
+  apply: (state) => {
+    const { fold } = state;
+    const pristine =
+      fold.openStepUuid === undefined &&
+      fold.pending.length === 0 &&
+      fold.deferred.length === 0;
+    if (state.messages.length === 0 && pristine) return state;
+    return freezeContextState({ messages: [], fold: EMPTY_FOLD });
+  },
 });
 
 const contextCompactionBaseShape = {
@@ -196,8 +218,8 @@ type ContextCompactionPayload = z.infer<typeof contextApplyCompactionSchema>;
 export const contextApplyCompaction = ContextModel.defineOp('context.apply_compaction', {
   schema: contextApplyCompactionSchema,
   apply: (state, p) => {
-    const result = buildContextCompactionShape(state, readContextCompactionShapeInput(p));
-    return resetFold([...result.messages]) as ContextMessage[];
+    const result = buildContextCompactionShape(state.messages, readContextCompactionShapeInput(p));
+    return freezeContextState({ messages: [...result.messages], fold: EMPTY_FOLD });
   },
 });
 
@@ -212,7 +234,7 @@ export function applyContextCompactionRecord(
   record: ContextCompactionRecord,
 ): ContextMessage[] {
   const result = buildContextCompactionShape(state, readContextCompactionShapeInput(record));
-  return resetFold([...result.messages]) as ContextMessage[];
+  return [...result.messages];
 }
 
 export function readContextCompactionShapeInput(
@@ -412,9 +434,12 @@ export const contextUndo = ContextModel.defineOp('context.undo', {
     count: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   }),
   apply: (state, p) => {
-    if (!isValidUndoCount(p.count) || state.length === 0) return state;
-    const cut = computeUndoCut(state, p.count);
+    if (!isValidUndoCount(p.count) || state.messages.length === 0) return state;
+    const cut = computeUndoCut(state.messages, p.count);
     if (!isFullyUndoable(cut, p.count)) return state;
-    return resetFold(state.slice(0, cut.cutIndex)) as ContextMessage[];
+    return freezeContextState({
+      messages: state.messages.slice(0, cut.cutIndex),
+      fold: EMPTY_FOLD,
+    });
   },
 });

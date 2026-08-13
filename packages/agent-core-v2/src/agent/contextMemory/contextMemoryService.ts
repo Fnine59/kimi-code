@@ -75,7 +75,7 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
   }
 
   get(): readonly ContextMessage[] {
-    return this.wire.getModel(ContextModel) as readonly ContextMessage[];
+    return this.wire.getModel(ContextModel).messages as readonly ContextMessage[];
   }
 
   append(...messages: readonly ContextMessage[]): void {

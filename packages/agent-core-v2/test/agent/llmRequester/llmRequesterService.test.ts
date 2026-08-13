@@ -129,15 +129,8 @@ afterEach(() => disposables.dispose());
 function createService(
   requester: ModelRequester,
   projector:
-    | (Pick<IAgentContextProjectorService, 'project' | 'projectStrict'> &
-        Partial<
-          Pick<
-            IAgentContextProjectorService,
-            | 'captureMediaStripSnapshot'
-            | 'projectMediaDegraded'
-            | 'projectMediaStripped'
-          >
-        >)
+    | (Pick<IAgentContextProjectorService, 'project'> &
+        Partial<Pick<IAgentContextProjectorService, 'captureMediaStripSnapshot'>>)
     | undefined,
   options: {
     readonly thinkingLevel?: ThinkingEffort;
@@ -205,8 +198,6 @@ function createService(
   } else {
     ix.stub(IAgentContextProjectorService, {
       captureMediaStripSnapshot: () => testSnapshot,
-      projectMediaDegraded: projector.project,
-      projectMediaStripped: projector.project,
       ...projector,
     });
   }
@@ -301,12 +292,9 @@ describe('AgentLLMRequesterService strict resend', () => {
     let projectCalls = 0;
     let strictCalls = 0;
     const { service } = createService(createRequester(calls), {
-      project: (messages: readonly ContextMessage[]) => {
-        projectCalls += 1;
-        return messages;
-      },
-      projectStrict: (messages: readonly ContextMessage[]) => {
-        strictCalls += 1;
+      project: (messages: readonly ContextMessage[], policy) => {
+        if (policy?.wire === 'strict') strictCalls += 1;
+        else projectCalls += 1;
         return messages;
       },
     });
@@ -331,9 +319,8 @@ describe('AgentLLMRequesterService strict resend', () => {
     });
     let strictCalls = 0;
     const { service } = createService(requester, {
-      project: (messages: readonly ContextMessage[]) => messages,
-      projectStrict: (messages: readonly ContextMessage[]) => {
-        strictCalls += 1;
+      project: (messages: readonly ContextMessage[], policy) => {
+        if (policy?.wire === 'strict') strictCalls += 1;
         return messages;
       },
     });
@@ -357,16 +344,9 @@ describe('AgentLLMRequesterService media-stripped resend', () => {
     let strictCalls = 0;
     let strippedCalls = 0;
     const { service } = createService(createRequester(calls, IMAGE_FORMAT_400), {
-      project: (messages: readonly ContextMessage[]) => {
-        projectCalls += 1;
-        return messages;
-      },
-      projectStrict: (messages: readonly ContextMessage[]) => {
-        strictCalls += 1;
-        return messages;
-      },
-      projectMediaStripped: (messages: readonly ContextMessage[]) => {
-        strippedCalls += 1;
+      project: (messages: readonly ContextMessage[], policy) => {
+        if (typeof policy?.media === 'object') strippedCalls += 1;
+        else projectCalls += 1;
         return messages;
       },
     });
@@ -385,13 +365,9 @@ describe('AgentLLMRequesterService media-stripped resend', () => {
     let projectCalls = 0;
     let strippedCalls = 0;
     const { service } = createService(createRequester(calls, IMAGE_FORMAT_400), {
-      project: (messages: readonly ContextMessage[]) => {
-        projectCalls += 1;
-        return messages;
-      },
-      projectStrict: (messages: readonly ContextMessage[]) => messages,
-      projectMediaStripped: (messages: readonly ContextMessage[]) => {
-        strippedCalls += 1;
+      project: (messages: readonly ContextMessage[], policy) => {
+        if (typeof policy?.media === 'object') strippedCalls += 1;
+        else projectCalls += 1;
         return messages;
       },
     });
@@ -413,10 +389,8 @@ describe('AgentLLMRequesterService media-stripped resend', () => {
     const { service } = createService(
       createRequester(calls, new APIStatusError(400, 'some other validation problem')),
       {
-        project: (messages: readonly ContextMessage[]) => messages,
-        projectStrict: (messages: readonly ContextMessage[]) => messages,
-        projectMediaStripped: (messages: readonly ContextMessage[]) => {
-          strippedCalls += 1;
+        project: (messages: readonly ContextMessage[], policy) => {
+          if (typeof policy?.media === 'object') strippedCalls += 1;
           return messages;
         },
       },
@@ -444,17 +418,10 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
         }),
       ),
       {
-        project: (messages: readonly ContextMessage[]) => {
-          projectCalls += 1;
-          return messages;
-        },
-        projectStrict: (messages: readonly ContextMessage[]) => messages,
-        projectMediaDegraded: (messages: readonly ContextMessage[]) => {
-          degradedCalls += 1;
-          return messages;
-        },
-        projectMediaStripped: (messages: readonly ContextMessage[]) => {
-          strippedCalls += 1;
+        project: (messages: readonly ContextMessage[], policy) => {
+          if (policy?.media === 'degraded') degradedCalls += 1;
+          else if (typeof policy?.media === 'object') strippedCalls += 1;
+          else projectCalls += 1;
           return messages;
         },
       },
@@ -477,17 +444,10 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
     const { service } = createService(
       createRequester(calls, BODY_TOO_LARGE_413, [BODY_TOO_LARGE_413]),
       {
-        project: (messages: readonly ContextMessage[]) => {
-          projectCalls += 1;
-          return messages;
-        },
-        projectStrict: (messages: readonly ContextMessage[]) => messages,
-        projectMediaDegraded: (messages: readonly ContextMessage[]) => {
-          degradedCalls += 1;
-          return messages;
-        },
-        projectMediaStripped: (messages: readonly ContextMessage[]) => {
-          strippedCalls += 1;
+        project: (messages: readonly ContextMessage[], policy) => {
+          if (policy?.media === 'degraded') degradedCalls += 1;
+          else if (typeof policy?.media === 'object') strippedCalls += 1;
+          else projectCalls += 1;
           return messages;
         },
       },
@@ -508,9 +468,6 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
       createRequester(calls, BODY_TOO_LARGE_413, [BODY_TOO_LARGE_413]),
       {
         project: (messages: readonly ContextMessage[]) => messages,
-        projectStrict: (messages: readonly ContextMessage[]) => messages,
-        projectMediaDegraded: (messages: readonly ContextMessage[]) => messages,
-        projectMediaStripped: (messages: readonly ContextMessage[]) => messages,
       },
     );
 
@@ -573,17 +530,10 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
     const { service } = createService(
       createRequester(calls, BODY_TOO_LARGE_413, [BODY_TOO_LARGE_413, BODY_TOO_LARGE_413]),
       {
-        project: (messages: readonly ContextMessage[]) => {
-          projectCalls += 1;
-          return messages;
-        },
-        projectStrict: (messages: readonly ContextMessage[]) => messages,
-        projectMediaDegraded: (messages: readonly ContextMessage[]) => {
-          degradedCalls += 1;
-          return messages;
-        },
-        projectMediaStripped: (messages: readonly ContextMessage[]) => {
-          strippedCalls += 1;
+        project: (messages: readonly ContextMessage[], policy) => {
+          if (policy?.media === 'degraded') degradedCalls += 1;
+          else if (typeof policy?.media === 'object') strippedCalls += 1;
+          else projectCalls += 1;
           return messages;
         },
       },
@@ -603,13 +553,9 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
     let projectCalls = 0;
     let degradedCalls = 0;
     const { service } = createService(createRequester(calls, BODY_TOO_LARGE_413), {
-      project: (messages: readonly ContextMessage[]) => {
-        projectCalls += 1;
-        return messages;
-      },
-      projectStrict: (messages: readonly ContextMessage[]) => messages,
-      projectMediaDegraded: (messages: readonly ContextMessage[]) => {
-        degradedCalls += 1;
+      project: (messages: readonly ContextMessage[], policy) => {
+        if (policy?.media === 'degraded') degradedCalls += 1;
+        else projectCalls += 1;
         return messages;
       },
     });
@@ -633,10 +579,8 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
       const calls = { value: 0 };
       let degradedCalls = 0;
       const { service } = createService(createRequester(calls, error), {
-        project: (messages: readonly ContextMessage[]) => messages,
-        projectStrict: (messages: readonly ContextMessage[]) => messages,
-        projectMediaDegraded: (messages: readonly ContextMessage[]) => {
-          degradedCalls += 1;
+        project: (messages: readonly ContextMessage[], policy) => {
+          if (policy?.media === 'degraded') degradedCalls += 1;
           return messages;
         },
       });
@@ -651,7 +595,6 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
 describe('AgentLLMRequesterService trace id', () => {
   const passthroughProjector = {
     project: (messages: readonly ContextMessage[]) => messages,
-    projectStrict: (messages: readonly ContextMessage[]) => messages,
   };
 
   function createTracedRequester(traceId: string | null): ModelRequester {

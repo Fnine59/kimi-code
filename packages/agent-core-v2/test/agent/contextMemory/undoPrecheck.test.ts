@@ -5,7 +5,11 @@ import {
   contextUndo,
   isFullyUndoable,
 } from '#/agent/contextMemory/contextOps';
-import type { ContextMessage } from '#/agent/contextMemory/types';
+import {
+  EMPTY_FOLD,
+  type ContextMessage,
+  type ContextState,
+} from '#/agent/contextMemory/types';
 
 function text(value: string): { type: 'text'; text: string } {
   return { type: 'text', text: value };
@@ -98,27 +102,32 @@ describe('computeUndoCut', () => {
 });
 
 describe('contextUndo op', () => {
+  function stateOf(messages: readonly ContextMessage[]): ContextState {
+    return { messages, fold: EMPTY_FOLD };
+  }
+
   it('slices the history at the cut point, dropping post-cut injections too', () => {
-    const state = [
+    const state = stateOf([
       user(USER_ORIGIN),
       assistant(),
       user(USER_ORIGIN),
       injection(),
       assistant(),
-    ];
+    ]);
     const next = contextUndo.apply(state, { count: 1 });
-    expect(next).toEqual([user(USER_ORIGIN), assistant()]);
+    expect(next.messages).toEqual([user(USER_ORIGIN), assistant()]);
+    expect(next.fold).toBe(EMPTY_FOLD);
   });
 
   it('returns the same reference when not fully undoable', () => {
-    const state = [user(USER_ORIGIN), compaction(), assistant()];
+    const state = stateOf([user(USER_ORIGIN), compaction(), assistant()]);
     expect(contextUndo.apply(state, { count: 1 })).toBe(state);
   });
 
   it.each([0, 0.5, Number.MAX_SAFE_INTEGER + 1])(
     'returns the same reference for invalid count %s',
     (count) => {
-      const state = [user(USER_ORIGIN), assistant()];
+      const state = stateOf([user(USER_ORIGIN), assistant()]);
       expect(contextUndo.apply(state, { count })).toBe(state);
     },
   );
