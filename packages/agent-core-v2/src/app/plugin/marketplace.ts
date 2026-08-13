@@ -6,16 +6,25 @@
  * public, hand-writable contract, so parsing is deliberately lenient: legacy
  * field aliases (`url`/`downloadUrl`, `name`/`shortDescription`/`websiteURL`)
  * are honored, blank strings read as missing, `keywords` keeps only non-blank
- * strings, and `type`/`tier` validate against the accepted vocabulary. Entry
+ * strings, and `type`/`tier` validate against the accepted vocabulary
+ * (`plugin` plus legacy `managed`/`guide`; `official`/`curated`). Entry
  * sources may be http(s), GitHub repo/ref URLs, `file://`, absolute paths,
  * `~`-relative, or catalog-relative (`./official/*.zip`) — all resolve to a
  * directly installable form here. Entries without a `version` get one from a
- * GitHub ref tail, or from the bare repo's latest release via the
- * `/releases/latest` redirect (never the rate-limited API); the version feeds
- * `computeUpdateStatus`, which reports an update only on strict semver
- * latest > installed. The default catalog location is the production CDN URL;
- * hosts may additionally pass a source-checkout fallback catalog for offline
- * dev. No DI collaborators — pure functions over `fetch`/`fs`.
+ * GitHub ref tail (`releases/tag/<tag>`, `tree/<ref>`, `commit/<sha>` —
+ * semver-shaped refs only), or from the bare repo's latest release via the
+ * `/releases/latest` redirect (a UI route, deliberately never the
+ * rate-limited api.github.com). `computeUpdateStatus` reports an update only
+ * on strict semver latest > installed, and never borrows the catalog version
+ * for an unknown local one. `withBuiltInEntries` masks same-id catalog rows
+ * with client-injected built-in capability entries (taking only their
+ * version), so what those ids mean stays bound to the client release; the
+ * `builtIn` flag is set only by that path, never from catalog data.
+ * `readPluginMarketplace` returns the location actually read, because entry
+ * sources resolve against it — including the host-supplied source-checkout
+ * fallback, which hosts pass only when the catalog location is the built-in
+ * default (an explicitly configured catalog fails hard). No DI collaborators
+ * — pure functions over `fetch`/`fs`.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -25,7 +34,6 @@ import { fileURLToPath } from 'node:url';
 
 import { gt, valid } from 'semver';
 
-/** Production marketplace catalog; hosts may override per option or env. */
 export const KIMI_CODE_PLUGIN_MARKETPLACE_URL =
   'https://code.kimi.com/kimi-code/plugins/marketplace.json';
 export const KIMI_CODE_PLUGIN_MARKETPLACE_URL_ENV = 'KIMI_CODE_PLUGIN_MARKETPLACE_URL';
@@ -43,11 +51,6 @@ export interface PluginMarketplaceEntry {
   readonly description?: string;
   readonly homepage?: string;
   readonly keywords?: readonly string[];
-  /**
-   * Internal provenance flag for client-injected built-in rows. The catalog
-   * parser builds entries field-by-field and never sets it, so a custom
-   * catalog cannot forge it (unlike the `capability:<id>` source string).
-   */
   readonly builtIn?: boolean;
 }
 
@@ -69,24 +72,12 @@ export interface MarketplaceLocation {
 }
 
 export interface ReadPluginMarketplaceOptions {
-  /** Catalog location string: http(s) URL, file:// URL, or a local path. */
   readonly source: string;
-  /** Base for relative local catalog paths (host cwd). */
   readonly workDir: string;
   readonly fetchImpl?: typeof fetch;
-  /**
-   * Fallback catalog consulted only when reading `source` fails — hosts pass
-   * their source-checkout resolver when (and only when) the catalog location
-   * is the built-in default, so an explicitly configured catalog fails hard.
-   */
   readonly sourceCheckoutLocation?: () => Promise<MarketplaceLocation | undefined>;
 }
 
-/**
- * Compare a marketplace entry's (latest) version against the locally installed
- * version. Only reports `update` when both are valid semver and latest > local,
- * so a stale or non-semver version never produces a spurious or downgrading prompt.
- */
 export function computeUpdateStatus(
   latest: string | undefined,
   local: string | undefined,
@@ -122,11 +113,6 @@ export function resolveMarketplaceLocation(source: string, workDir: string): Mar
   return { raw: trimmed, kind: 'local', resolved: resolveLocalPath(trimmed, workDir) };
 }
 
-/**
- * Resolve the catalog location and read its raw text, falling back to the
- * source-checkout catalog when the primary read fails and the host provided
- * one. Returns the location actually read — entry sources resolve against it.
- */
 export async function readPluginMarketplace(
   options: ReadPluginMarketplaceOptions,
 ): Promise<{ raw: string; location: MarketplaceLocation }> {
@@ -169,15 +155,6 @@ export function parsePluginMarketplace(raw: string, location: MarketplaceLocatio
   };
 }
 
-/**
- * Built-in capability entries (kimi-cu, kimi-webbridge) are injected by the
- * client instead of being served by the marketplace catalog, so their
- * visibility is bound to the client version — older clients never see them.
- * Same-id catalog rows are MASKED, not merged: what these ids mean stays
- * decided by the client release. The catalog may contribute only its version
- * so the built-in row can use the normal update badge while keeping the
- * capability install route and client-owned copy.
- */
 export function withBuiltInEntries(
   marketplace: PluginMarketplace,
   builtIns: readonly PluginMarketplaceEntry[],
@@ -192,10 +169,6 @@ export function withBuiltInEntries(
   return { ...marketplace, plugins: [...catalog, ...enrichedBuiltIns] };
 }
 
-/**
- * Fill in missing entry versions by resolving the latest GitHub release of
- * bare-repo sources (parallel; per-entry failures degrade to no version).
- */
 export async function withLatestVersions(
   marketplace: PluginMarketplace,
   fetchImpl: typeof fetch,
@@ -301,16 +274,6 @@ function resolveEntrySource(source: string, location: MarketplaceLocation): stri
   return resolve(dirname(location.resolved), trimmed);
 }
 
-/**
- * Best-effort derivation of a semver version from a GitHub source URL that pins
- * a specific ref. Lets a marketplace entry omit `version` when the source
- * already encodes the release (for example `/releases/tag/v6.0.3`), keeping the
- * source URL the single source of truth and avoiding drift between the two.
- *
- * Only refs shaped like semver (`v6.0.3`, `6.0.3`, `6.0.3-rc.1`) are accepted;
- * bare repo URLs, branch names and commit SHAs yield `undefined`, so update
- * detection degrades to "unknown" instead of comparing meaningless values.
- */
 function deriveVersionFromGithubSource(source: string): string | undefined {
   let url: URL;
   try {
