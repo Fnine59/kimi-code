@@ -8,11 +8,15 @@
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { Event } from '#/_base/event';
 
-import type { CapabilityStatus } from './types';
+import type { CapabilityInstallChange, CapabilityStatus } from './types';
 
 export interface ICapabilityService {
   readonly _serviceBrand: undefined;
+
+  /** Fires on every install progress transition (start / step / settle / error). */
+  readonly onDidChangeInstall: Event<CapabilityInstallChange>;
 
   listCapabilities(): Promise<readonly CapabilityStatus[]>;
 

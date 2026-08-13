@@ -50,6 +50,11 @@ export interface CapabilityStatus {
 
 export type CapabilityInstallReporter = (step: string, percent?: number) => void;
 
+export interface CapabilityInstallChange {
+  readonly id: CapabilityId;
+  readonly install: CapabilityInstallProgress;
+}
+
 export interface CapabilityEntry {
   readonly id: CapabilityId;
   readonly pluginId?: string;

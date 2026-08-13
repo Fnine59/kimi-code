@@ -213,6 +213,33 @@ describe('CapabilityService', () => {
     expect.unreachable('install never settled');
   });
 
+  it('emits onDidChangeInstall on every progress transition', async () => {
+    const service = fakeService([
+      fakeEntry({
+        id: 'kimi-cu',
+        install: (report) => {
+          report('download', 42);
+          return Promise.resolve(undefined);
+        },
+      }),
+    ]);
+    const seen: Array<{ id: string; install: { running: boolean; step?: string } }> = [];
+    service.onDidChangeInstall((change) => {
+      seen.push({ id: change.id, install: change.install });
+    });
+
+    await service.installCapability('kimi-cu');
+    for (let i = 0; i < 50; i += 1) {
+      const status = await service.getCapability('kimi-cu');
+      if (!status.install.running) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(seen[0]).toEqual({ id: 'kimi-cu', install: { running: true } });
+    expect(seen).toContainEqual({ id: 'kimi-cu', install: { running: true, step: 'download', percent: 42 } });
+    expect(seen[seen.length - 1]).toEqual({ id: 'kimi-cu', install: { running: false } });
+  });
+
   it('surfaces an install note from the entry through progress', async () => {
     const service = fakeService([
       fakeEntry({

@@ -21,9 +21,11 @@ import { pathToFileURL } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { WebSocket } from 'ws';
+
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
-import { authHeaders } from './helpers/auth';
+import { authHeaders, bearerToken } from './helpers/auth';
 
 interface Envelope<T> {
   code: number;
@@ -227,6 +229,38 @@ describe('server-v2 /api/v1 plugins', () => {
     expect(unknown.body.code).toBe(40419);
     const badSource = await call('POST', '/api/v1/plugins', { source: '' });
     expect(badSource.body.code).toBe(40001);
+  });
+
+  it('fans out event.plugin.changed over WS on install and remove', async () => {
+    const ws = new WebSocket(`${base.replace('http', 'ws')}/api/v1/ws`, [
+      `kimi-code.bearer.${bearerToken(server!)}`,
+    ]);
+    const types: string[] = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('message', () => {
+          resolve();
+        }); // server_hello
+        ws.once('error', reject);
+      });
+      ws.on('message', (data: Buffer) => {
+        const frame = JSON.parse(data.toString('utf8')) as { type?: string };
+        if (frame.type !== undefined) types.push(frame.type);
+      });
+
+      const source = await makePluginDir('demo-plugin', '1.0.0');
+      await call('POST', '/api/v1/plugins', { source });
+      await vi.waitFor(() => {
+        expect(types).toContain('event.plugin.changed');
+      });
+
+      await call('POST', '/api/v1/plugins/demo-plugin:remove');
+      await vi.waitFor(() => {
+        expect(types.filter((t) => t === 'event.plugin.changed').length).toBeGreaterThanOrEqual(2);
+      });
+    } finally {
+      ws.close();
+    }
   });
 
   it('maps client-fixable install input errors to 4xx, never 50001', async () => {

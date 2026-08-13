@@ -17,6 +17,8 @@ import {
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
+  ICapabilityService,
+  IPluginService,
   IWorkspaceService,
   KIMI_CODE_PLUGIN_MARKETPLACE_URL,
   logSeed,
@@ -381,6 +383,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const close = async (): Promise<void> => {
     await app.close();
     configWarningSubscription.dispose();
+    pluginChangeSubscription.dispose();
+    capabilityInstallSubscription.dispose();
     authFailureLimiter?.dispose();
     modelCatalogRefreshScheduler.dispose();
     // Telemetry is best-effort and must never prevent core or instance cleanup.
@@ -450,6 +454,22 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     });
   };
   const configWarningSubscription = configService.onDidChangeDiagnostics(publishConfigWarnings);
+
+  // Fan plugin/capability lifecycle facts out as global WS events so every
+  // client (desktop settings, web, CLI) converges without polling: plugin
+  // mutations end in onDidReload; capability installs report every progress
+  // transition through onDidChangeInstall.
+  const pluginService = core.accessor.get(IPluginService);
+  const pluginChangeSubscription = pluginService.onDidReload(() => {
+    core.accessor.get(IEventService).publish({ type: 'event.plugin.changed', payload: {} });
+  });
+  const capabilityService = core.accessor.get(ICapabilityService);
+  const capabilityInstallSubscription = capabilityService.onDidChangeInstall((change) => {
+    core.accessor.get(IEventService).publish({
+      type: 'event.capability.changed',
+      payload: { capability_id: change.id, install: change.install },
+    });
+  });
   void configService.ready
     .then(() => {
       if (configService.diagnostics().some((diagnostic) => diagnostic.severity === 'warning')) {
