@@ -42,7 +42,10 @@ vi.mock('#/utils/clipboard/clipboard-image', async (importActual) => {
 interface PasteHarness {
   readonly store: ImageAttachmentStore;
   readonly track: ReturnType<typeof vi.fn>;
+  /** Invoke the paste handler, then wait for the background ingestion to settle. */
   pasteImage(): Promise<void>;
+  /** Invoke the paste handler only — background ingestion may still be pending. */
+  pasteImageRaw(): Promise<boolean>;
 }
 
 function createPasteHarness(
@@ -90,14 +93,23 @@ function createPasteHarness(
   const controller = new EditorKeyboardController(host, store);
   controller.install();
 
+  const pasteImageRaw = (): Promise<boolean> => {
+    const handler = editor['onPasteImage'];
+    if (handler === undefined) throw new Error('onPasteImage handler not installed');
+    return (handler as () => Promise<boolean>)();
+  };
+
   return {
     store,
     track,
     async pasteImage() {
-      const handler = editor['onPasteImage'];
-      if (handler === undefined) throw new Error('onPasteImage handler not installed');
-      await (handler as () => Promise<boolean>)();
+      await pasteImageRaw();
+      for (let id = 1; id <= store.size(); id++) {
+        const attachment = store.get(id);
+        if (attachment?.kind === 'image') await attachment.pending;
+      }
     },
+    pasteImageRaw,
   };
 }
 
@@ -397,5 +409,37 @@ describe('clipboard image paste compression', () => {
     const att = store.get(1);
     if (att?.kind !== 'image') throw new Error('expected image attachment');
     expect(att.fileId).toBeUndefined();
+  });
+
+  it('settles the paste callback before the background daemon upload completes (v2)', async () => {
+    const small = await solidPng(80, 80);
+    readClipboardMedia.mockResolvedValue({ kind: 'image', bytes: small, mimeType: 'image/png' });
+    let resolveUpload!: (meta: { id: string }) => void;
+    const uploadFile = vi.fn(
+      (
+        _data: Uint8Array,
+        _opts: { name: string; mimeType?: string; expiresInSec?: number },
+      ): Promise<{ id: string }> =>
+        new Promise<{ id: string }>((resolve) => {
+          resolveUpload = resolve;
+        }),
+    );
+
+    const { store, pasteImageRaw } = createPasteHarness({ engineV2: true, uploadFile });
+    // The handler returns once the placeholder is in the editor; the upload
+    // is still unresolved here — typing is never held behind it.
+    await pasteImageRaw();
+
+    const att = store.get(1);
+    if (att?.kind !== 'image') throw new Error('expected image attachment');
+    expect(att.placeholder).toBe('[image #1 (80×80)]');
+    expect(att.fileId).toBeUndefined();
+    expect(att.pending).toBeDefined();
+
+    resolveUpload({ id: 'file-late' });
+    await att.pending;
+
+    expect(att.fileId).toBe('file-late');
+    expect(att.pending).toBeUndefined();
   });
 });

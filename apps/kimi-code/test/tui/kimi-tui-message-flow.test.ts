@@ -2688,6 +2688,38 @@ command = "vim"
     expect(attachment.bytes).toEqual(new Uint8Array([0xaa, 0xbb]));
   });
 
+  it('waits briefly for a pending paste ingestion so the submit uses the daemon-ref form', async () => {
+    const { driver, session } = await makeDriver();
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const attachment = imageStore.addImage(new Uint8Array([0xaa, 0xbb]), 'image/png', 1, 1);
+    // Simulate a paste whose background ingestion is still uploading when the
+    // user hits Enter: the send path waits for it instead of dispatching the
+    // inline fallback.
+    let finishIngestion!: () => void;
+    attachment.pending = new Promise<void>((resolve) => {
+      finishIngestion = () => {
+        attachment.fileId = 'file-late';
+        attachment.fileExpiresAt = Date.now() + 60 * 60 * 1000;
+        attachment.pending = undefined;
+        resolve();
+      };
+    });
+
+    driver.handleUserInput(`describe ${attachment.placeholder}`);
+    expect(session.prompt).not.toHaveBeenCalled();
+
+    finishIngestion();
+    await vi.waitFor(() => {
+      expect(session.prompt).toHaveBeenCalledWith(
+        [
+          { type: 'text', text: 'describe ' },
+          { type: 'image_url', imageUrl: { url: 'kimi-file://file-late' } },
+        ],
+        { promptId: expect.any(String) },
+      );
+    });
+  });
+
   it('releases staged media exactly once when the prompt dispatch rejects', async () => {
     const session = makeSession({
       prompt: vi.fn(async () => {

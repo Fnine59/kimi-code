@@ -114,6 +114,7 @@ import {
   SESSION_LIST_PAGE_SIZE,
   SESSIONLESS_STARTUP_NOTICE,
 } from './constant/kimi-tui';
+import { IMAGE_INGESTION_SUBMIT_WAIT_MS } from './constant/media';
 import { CHROME_GUTTER } from './constant/rendering';
 import { MAX_TERMINAL_TITLE_LENGTH } from './constant/terminal';
 import { AuthFlowController } from './controllers/auth-flow';
@@ -156,6 +157,7 @@ import { pickForegroundTasks } from './utils/foreground-task';
 import { ImageAttachmentStore, type ImageAttachment } from './utils/image-attachment-store';
 import {
   extractMediaAttachments,
+  pendingImageIngestions,
   refreshExpiringImageFileRefs,
   rewriteMediaPlaceholders,
 } from './utils/image-placeholder';
@@ -1310,6 +1312,19 @@ export class KimiTUI {
       return;
     }
     let extraction: ReturnType<typeof extractMediaAttachments>;
+    if (preExtracted === undefined) {
+      // A just-pasted image may still be finishing its background ingestion
+      // (compression/daemon upload): give it a bounded moment so the submit
+      // can use the compressed/daemon-ref form — a slower ingestion extracts
+      // to the inline fallback instead. Undefined when nothing is pending,
+      // keeping the media-free send path synchronous.
+      const ingestionWait = pendingImageIngestions(
+        text,
+        this.imageStore,
+        IMAGE_INGESTION_SUBMIT_WAIT_MS,
+      );
+      if (ingestionWait !== undefined) await ingestionWait;
+    }
     try {
       // Pasted videos are copied into the cache and expand to a `file://`
       // `video_url` part; the engine resolves (uploads or degrades) them
@@ -1338,8 +1353,8 @@ export class KimiTUI {
       return;
     }
     // Idle cache-hint interception sits before session creation; it is
-    // synchronous unless a hint actually fires, keeping the send path
-    // await-free up to sendMessage.
+    // synchronous unless a hint actually fires. Aside from the bounded
+    // ingestion wait above, the send path stays await-free up to sendMessage.
     if (this.cacheHint.maybeInterceptOnSubmit(text, extraction)) return;
     let session = this.session;
     if (session === undefined) {

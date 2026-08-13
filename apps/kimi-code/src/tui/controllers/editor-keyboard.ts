@@ -301,6 +301,10 @@ export class EditorKeyboardController {
       let editorExtraction: ReturnType<typeof extractMediaAttachments> | undefined;
       if (!editorIsBash && text.length > 0) {
         try {
+          // Synchronous path: an image still ingesting in the background
+          // extracts to its inline fallback here (no bounded wait like
+          // `sendNormalUserInput` — this handler cannot await without
+          // interleaving queue/draft edits).
           editorExtraction = extractMediaAttachments(text, this.imageStore);
         } catch (error) {
           // Cache copy failed (e.g. the pasted video's source vanished) —
@@ -485,9 +489,12 @@ export class EditorKeyboardController {
     if (meta === null) return false;
 
     // Register the attachment and put its placeholder in the editor before
-    // doing any of the asynchronous ingestion work below. CustomEditor holds
-    // subsequent keystrokes while this handler is in flight, so Enter cannot
-    // submit a draft that is still missing the pasted image.
+    // any of the asynchronous ingestion work below. CustomEditor only holds
+    // keystrokes until this handler settles, so the callback returns right
+    // after the placeholder lands and ingestion continues in the background —
+    // typing never waits on compression or the daemon upload. Submit gives a
+    // pending ingestion a bounded wait (`pendingImageIngestions`) and falls
+    // back to the inline form when it has not finished.
     const attachment = this.imageStore.addImage(
       media.bytes,
       meta.mime,
@@ -498,19 +505,17 @@ export class EditorKeyboardController {
     this.host.state.ui.requestRender();
     this.host.track('shortcut_paste', { kind: 'image' });
 
-    try {
-      await this.finishClipboardImagePaste(
-        attachment,
-        media.bytes,
-        meta.mime,
-        meta.width,
-        meta.height,
-      );
-    } catch (error) {
+    attachment.pending = this.finishClipboardImagePaste(
+      attachment,
+      media.bytes,
+      meta.mime,
+      meta.width,
+      meta.height,
+    ).catch((error: unknown) => {
       // The raw attachment and its already-visible placeholder are still a
       // valid inline fallback when optional ingestion work fails.
       this.host.showError(`Failed to process pasted image: ${formatErrorMessage(error)}`);
-    }
+    });
     return true;
   }
 
@@ -589,9 +594,11 @@ export class EditorKeyboardController {
 
   /**
    * Paste-time upload of the final image bytes to the engine's daemon file
-   * store (agent-core-v2 only). Best effort: any failure returns undefined,
+   * store (agent-core-v2 only), run as part of the background ingestion —
+   * typing never waits on it, and submit only gives it the bounded
+   * `pendingImageIngestions` wait. Best effort: any failure returns undefined,
    * so the attachment keeps no `fileId` and submit-time expansion falls back
-   * to the inline base64 form — the paste never blocks on the upload.
+   * to the inline base64 form.
    */
   private async uploadImageToDaemonFileStore(
     bytes: Uint8Array,

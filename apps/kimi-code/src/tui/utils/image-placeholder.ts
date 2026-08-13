@@ -169,6 +169,43 @@ export function extractMediaAttachments(
 }
 
 /**
+ * Give images referenced by `text` a bounded moment to finish their
+ * background paste ingestion (compression/upload — see `ImageAttachment.pending`)
+ * before extraction, so a paste-then-immediately-submit still expands to the
+ * compressed/daemon-ref form. The returned promise resolves after `timeoutMs`
+ * at the latest; whatever has not landed by then simply extracts to the
+ * inline fallback form. Returns undefined when nothing is pending, so the
+ * submit path stays synchronous for media-free prompts.
+ */
+export function pendingImageIngestions(
+  text: string,
+  store: ImageAttachmentStore,
+  timeoutMs: number,
+): Promise<void> | undefined {
+  const pendings: Promise<void>[] = [];
+  PLACEHOLDER_REGEX.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = PLACEHOLDER_REGEX.exec(text)) !== null) {
+    const [, kind, idStr] = match;
+    if (kind !== 'image' || idStr === undefined) continue;
+    const attachment = store.get(Number.parseInt(idStr, 10));
+    if (attachment?.kind === 'image' && attachment.pending !== undefined) {
+      pendings.push(attachment.pending);
+    }
+  }
+  if (pendings.length === 0) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    Promise.allSettled(pendings).then(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+/**
  * Replace daemon refs that may expire before validation reaches the server
  * with the attachment's retained bytes. Called both at extraction time and
  * again when a queued/cache-hint submission is actually dispatched.

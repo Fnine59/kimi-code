@@ -332,8 +332,9 @@ export class CustomEditor extends Editor {
 
     // Clipboard reads are asynchronous. Queue every key received while a
     // paste callback is in flight and replay it once the callback settles
-    // (placeholder insert + compression + daemon upload), so Enter cannot
-    // submit a half-built draft.
+    // (clipboard read + placeholder insert — compression and the daemon
+    // upload continue in the background off this path), so Enter cannot
+    // submit a draft that is still missing the pasted image.
     if (this.pasteInFlight) {
       this.pasteInputQueue.push(normalized);
       return;

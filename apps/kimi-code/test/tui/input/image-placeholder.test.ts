@@ -17,6 +17,7 @@ import { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 import {
   extractMediaAttachments,
   makeExtractionResendable,
+  pendingImageIngestions,
   refreshExpiringImageFileRefs,
   rewriteMediaPlaceholders,
 } from '#/tui/utils/image-placeholder';
@@ -529,5 +530,71 @@ describe('rewriteMediaPlaceholders', () => {
       cleanup();
       rmSync(srcDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('pendingImageIngestions', () => {
+  it('returns undefined for text without image placeholders', () => {
+    const store = new ImageAttachmentStore();
+    expect(pendingImageIngestions('hello world', store, 5)).toBeUndefined();
+  });
+
+  it('returns undefined when no referenced image has a pending ingestion', () => {
+    const { store, placeholder } = storeWith(new Uint8Array([0xaa, 0xbb]));
+    expect(pendingImageIngestions(`describe ${placeholder}`, store, 5)).toBeUndefined();
+  });
+
+  it('waits for a pending ingestion so extraction can use the daemon-ref form', async () => {
+    const { store, placeholder } = storeWith(new Uint8Array([0xaa, 0xbb]));
+    const att = store.get(1);
+    if (att?.kind !== 'image') throw new Error('expected image attachment');
+    let finish!: () => void;
+    att.pending = new Promise<void>((resolve) => {
+      finish = () => {
+        // Complete like the background ingestion would: land the upload id,
+        // then resolve and clear the pending marker.
+        att.fileId = 'file-1';
+        att.fileExpiresAt = Date.now() + 60 * 60 * 1000;
+        att.pending = undefined;
+        resolve();
+      };
+    });
+
+    const waited = pendingImageIngestions(`describe ${placeholder}`, store, 1_000);
+    if (waited === undefined) throw new Error('expected a pending wait');
+    let settled = false;
+    void waited.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+
+    finish();
+    await waited;
+    expect(settled).toBe(true);
+
+    const r = extractMediaAttachments(`describe ${placeholder}`, store);
+    const part = r.parts.find((p) => p.type === 'image_url');
+    expect(part?.type).toBe('image_url');
+    if (part?.type !== 'image_url') throw new Error('expected an image part');
+    expect(parseDaemonFileUrl(part.imageUrl.url)?.fileId).toBe('file-1');
+  });
+
+  it('bounds the wait by the timeout so a slow ingestion extracts to the inline form', async () => {
+    const { store, placeholder } = storeWith(new Uint8Array([0xaa, 0xbb]));
+    const att = store.get(1);
+    if (att?.kind !== 'image') throw new Error('expected image attachment');
+    att.pending = new Promise<void>(() => undefined); // never settles
+
+    const start = Date.now();
+    const waited = pendingImageIngestions(`describe ${placeholder}`, store, 20);
+    if (waited === undefined) throw new Error('expected a pending wait');
+    await waited;
+    expect(Date.now() - start).toBeLessThan(1_000);
+
+    const r = extractMediaAttachments(`describe ${placeholder}`, store);
+    const part = r.parts.find((p) => p.type === 'image_url');
+    if (part?.type !== 'image_url') throw new Error('expected an image part');
+    expect(part.imageUrl.url.startsWith('data:image/png;base64,')).toBe(true);
   });
 });

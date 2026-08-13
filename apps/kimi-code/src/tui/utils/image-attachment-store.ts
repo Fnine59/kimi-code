@@ -51,6 +51,15 @@ export interface ImageAttachment {
   fileId?: string;
   /** Epoch milliseconds when the daemon staging upload expires. */
   fileExpiresAt?: number;
+  /**
+   * Background ingestion (compression/original persistence/daemon upload)
+   * still in flight. The paste callback settles once the placeholder is in
+   * the editor — typing never waits on this — but submit holds it briefly
+   * (`pendingImageIngestions`) so a fast paste-then-Enter still gets the
+   * compressed/ref form; a slow ingestion submits the inline form instead.
+   * Cleared when ingestion completes.
+   */
+  pending?: Promise<void>;
   /** Rendered placeholder string, e.g. `[image #1 (640×480)]`. */
   readonly placeholder: string;
 }
@@ -151,6 +160,7 @@ export class ImageAttachmentStore {
     mutable.original = input.original;
     mutable.fileId = input.fileId;
     mutable.fileExpiresAt = input.fileExpiresAt;
+    mutable.pending = undefined;
     mutable.placeholder = formatPlaceholder(attachment.id, input.width, input.height);
     return attachment;
   }
