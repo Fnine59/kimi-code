@@ -3,8 +3,8 @@
  * runner.
  *
  * Invokes the execution-environment shell (POSIX bash; Git Bash on Windows)
- * through the injected `ISessionProcessRunner`. The command runs as
- * `cd <cwd> && <command>` inside the environment's working directory.
+ * through the injected `ISessionProcessRunner`, with cwd passed at the process
+ * boundary rather than injected into the user's shell script.
  *
  * Collaborators injected via constructor:
  *   - `runner`     — `ISessionProcessRunner`, spawns the shell process
@@ -33,8 +33,8 @@
  *
  * Ported from v1. The
  * v1 `process.env` spread is intentionally dropped: v2's `ISessionProcessRunner.exec`
- * already overlays the per-call `env` on `process.env`, so only the
- * noninteractive knobs are passed here.
+ * already overlays the per-call `env` on `process.env`, so only shell-specific
+ * overrides are passed here.
  *
  * Bound at Agent scope; self-registers via `registerAgentToolService(...)` at module
  * load.
@@ -48,6 +48,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionProcessRunner, type IProcess } from '#/session/process/processRunner';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import type { ExecutableToolResult, ToolExecution, ToolUpdate } from '#/tool/toolContract';
+import { canonicalizePath } from '#/tool/path-access';
 import {
   type ExecutableToolResultBuilderResult,
   ToolResultBuilder,
@@ -191,20 +192,17 @@ export class BashTool implements IBashTool {
 
   private spawn(effectiveCwd: string, command: string): Promise<IProcess> {
     const shellCwd = this.isWindowsBash ? windowsPathToPosixPath(effectiveCwd) : effectiveCwd;
-    const shellArgs = [
-      this.env.shellPath,
-      '-c',
-      `cd ${shellQuote(shellCwd)} && ${command}`,
-    ];
+    const shellArgs = [this.env.shellPath, '-c', command];
 
-    const noninteractiveEnv: Record<string, string> = {
+    const shellEnv: Record<string, string> = {
       NO_COLOR: '1',
       TERM: 'dumb',
       GIT_TERMINAL_PROMPT: process.env['GIT_TERMINAL_PROMPT'] ?? '0',
+      PWD: shellCwd,
       SHELL: this.env.shellPath,
     };
 
-    return this.runner.exec(shellArgs, { env: noninteractiveEnv });
+    return this.runner.exec(shellArgs, { cwd: effectiveCwd, env: shellEnv });
   }
 
   private async execution(
@@ -219,7 +217,6 @@ export class BashTool implements IBashTool {
     const startsInBackground = args.run_in_background === true;
     const foregroundTimeoutMs = normalizeTimeoutMs(args.timeout, false);
     const command = this.isWindowsBash ? rewriteWindowsNullRedirect(args.command) : args.command;
-    const effectiveCwd = args.cwd ?? this.ctx.cwd;
     const description = startsInBackground ? args.description!.trim() : foregroundDescription(args);
     const timeoutMs = startsInBackground
       ? args.disable_timeout
@@ -230,6 +227,10 @@ export class BashTool implements IBashTool {
     const builder = new ToolResultBuilder();
     let proc: IProcess;
     try {
+      const effectiveCwd =
+        args.cwd === undefined
+          ? this.ctx.cwd
+          : canonicalizePath(args.cwd, this.ctx.cwd, this.env.pathClass);
       proc = await this.spawn(effectiveCwd, command);
     } catch (error) {
       return {
@@ -478,10 +479,6 @@ async function killSpawnedProcess(proc: IProcess): Promise<void> {
   } finally {
     await disposeProcess(proc);
   }
-}
-
-function shellQuote(s: string): string {
-  return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
 function windowsPathToPosixPath(path: string): string {

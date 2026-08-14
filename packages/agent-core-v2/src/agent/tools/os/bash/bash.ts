@@ -2,7 +2,7 @@
  * `tools` domain — `IBashTool` contract.
  *
  * Public contract of Bash, the model's shell command runner: the command runs
- * as `cd <cwd> && <command>` inside the session's working directory, with a
+ * with the requested working directory at the process boundary, with a
  * manager-owned timeout deadline — a foreground command whose deadline fires
  * is moved to the background instead of being killed, and background tasks
  * report completion automatically in a later turn.

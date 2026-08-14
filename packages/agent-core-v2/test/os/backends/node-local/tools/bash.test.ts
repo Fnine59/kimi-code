@@ -821,9 +821,11 @@ describe('BashTool', () => {
 
     expect(exec).toHaveBeenCalledTimes(1);
     const [argv, execOptions] = exec.mock.calls[0]!;
-    expect(argv).toEqual(['/bin/bash', '-c', "cd '/workspace' && printf ok"]);
+    expect(argv).toEqual(['/bin/bash', '-c', 'printf ok']);
+    expect(execOptions?.cwd).toBe('/workspace');
     expect(execOptions?.env).toMatchObject({
       NO_COLOR: '1',
+      PWD: '/workspace',
       TERM: 'dumb',
     });
     expect(proc.stdin.end).toHaveBeenCalledTimes(1);
@@ -839,7 +841,36 @@ describe('BashTool', () => {
 
     await executeTool(tool, context({ command: 'pwd', cwd: '/tmp/project', timeout: 60 }));
 
-    expect(exec.mock.calls[0]?.[0]).toEqual(['/bin/bash', '-c', "cd '/tmp/project' && pwd"]);
+    expect(exec.mock.calls[0]?.[0]).toEqual(['/bin/bash', '-c', 'pwd']);
+    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('/tmp/project');
+    expect(exec.mock.calls[0]?.[1]?.env).toMatchObject({ PWD: '/tmp/project' });
+  });
+
+  it('resolves a relative args.cwd against the session cwd', async () => {
+    const { runner, exec } = createTestRunner(processWithOutput({ stdout: 'sub\n' }));
+    const tool = bashTool(runner, posixEnv, createTestCtx('/workspace/project'));
+
+    await executeTool(tool, context({ command: 'pwd', cwd: 'packages/ui', timeout: 60 }));
+
+    expect(exec.mock.calls[0]?.[0]).toEqual(['/bin/bash', '-c', 'pwd']);
+    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('/workspace/project/packages/ui');
+  });
+
+  it('resolves a relative Windows args.cwd without Git Bash path conversion', async () => {
+    const { runner, exec } = createTestRunner(processWithOutput({ stdout: 'sub\n' }));
+    const tool = bashTool(runner, windowsBashEnv, createTestCtx('C:\\Users\\me\\project'));
+
+    await executeTool(tool, context({ command: 'pwd', cwd: 'packages\\ui', timeout: 60 }));
+
+    expect(exec.mock.calls[0]?.[0]).toEqual([
+      'C:\\Program Files\\Git\\bin\\bash.exe',
+      '-c',
+      'pwd',
+    ]);
+    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('C:/Users/me/project/packages/ui');
+    expect(exec.mock.calls[0]?.[1]?.env).toMatchObject({
+      PWD: '/c/Users/me/project/packages/ui',
+    });
   });
 
   it('uses the kaos cwd as the default working directory', async () => {
@@ -848,7 +879,8 @@ describe('BashTool', () => {
 
     await executeTool(tool, context({ command: 'pwd', timeout: 60 }));
 
-    expect(exec.mock.calls[0]?.[0]).toEqual(['/bin/bash', '-c', "cd '/var/app' && pwd"]);
+    expect(exec.mock.calls[0]?.[0]).toEqual(['/bin/bash', '-c', 'pwd']);
+    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('/var/app');
   });
 
   it('uses Git Bash semantics on Windows', async () => {
@@ -863,9 +895,13 @@ describe('BashTool', () => {
     expect(argv).toEqual([
       'C:\\Program Files\\Git\\bin\\bash.exe',
       '-c',
-      "cd '/c/Users/me/project' && echo ok 2>/dev/null",
+      'echo ok 2>/dev/null',
     ]);
-    expect(execOptions?.env).toMatchObject({ SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe' });
+    expect(execOptions?.cwd).toBe('C:\\Users\\me\\project');
+    expect(execOptions?.env).toMatchObject({
+      PWD: '/c/Users/me/project',
+      SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe',
+    });
     expect(result).toMatchObject({
       output: 'ok\n',
       isError: false,
@@ -1207,7 +1243,8 @@ describe('BashTool', () => {
     await executeTool(tool, context({ command: 'ls 2>nul', timeout: 60 }));
 
     const argv = exec.mock.calls[0]?.[0] as readonly string[];
-    expect(argv[2]).toBe("cd '/c/Users/me/project' && ls 2>/dev/null");
+    expect(argv[2]).toBe('ls 2>/dev/null');
+    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('C:\\Users\\me\\project');
   });
 
   it('passes nul-redirect through unchanged on Linux so the argv keeps the literal file target', async () => {
@@ -1217,7 +1254,8 @@ describe('BashTool', () => {
     await executeTool(tool, context({ command: 'ls 2>nul', timeout: 60 }));
 
     const argv = exec.mock.calls[0]?.[0] as readonly string[];
-    expect(argv[2]).toBe("cd '/workspace' && ls 2>nul");
+    expect(argv[2]).toBe('ls 2>nul');
+    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('/workspace');
   });
 
   it('exposes a shell description that documents /bin/bash, TaskOutput/TaskStop, safety and efficiency sections, and background semantics', () => {
@@ -1653,8 +1691,9 @@ describe('BashTool background mode', () => {
     expect(argv).toEqual([
       'C:\\Program Files\\Git\\bin\\bash.exe',
       '-c',
-      "cd '/c/Users/me/project' && echo ok 2>/dev/null",
+      'echo ok 2>/dev/null',
     ]);
+    expect(execOptions?.cwd).toBe('C:\\Users\\me\\project');
     expect(execOptions?.env).toMatchObject({ SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe' });
     expect(secondProc.kill).toHaveBeenCalledWith('SIGTERM');
     expect(results).toContainEqual(expect.objectContaining({ isError: false }));
