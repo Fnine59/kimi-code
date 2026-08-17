@@ -1,14 +1,4 @@
-/**
- * `llmRequester` domain — durable request-trace state and events.
- *
- * Defines the `llm.tools_snapshot` snapshot event and the `llm.request`
- * outbound request trace event; the `llmRequestTraceKey` state folds only
- * the snapshot de-dup cursor (`llm.request` records restore as journal facts
- * with no state). Scope-agnostic.
- */
-
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
-
 import { z } from 'zod';
 
 import { Event2 } from '#/app/event/event2';
@@ -61,7 +51,7 @@ const llmRequestSchema = z.object({
   messageCount: z.number(),
   turnStep: z.string().optional(),
   attempt: z.string().optional(),
-  projection: z.enum(['strict', 'media-degraded', 'media-stripped']).optional(),
+  projection: z.enum(['strict', 'media-degraded', 'media-stripped', 'strict-media-degraded', 'strict-media-stripped']).optional(),
   droppedCount: z.number().optional(),
 });
 
