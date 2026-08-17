@@ -3,15 +3,15 @@
  *
  * Ported from v1 (`packages/agent-core/test/tools/bash.test.ts`) and adapted
  * to the v2 constructor `(runner, kaos, background, options)`. Self-contained:
- * builds minimal fake `ISessionProcessRunner` / `IProcess`, `IKaos`, and
+ * builds minimal fake runtime / `IHostProcessService`, `IKaos`, and
  * `IAgentTaskService` inline so the tool can be exercised without the
  * composition root. The fake `IAgentTaskService` drives the real
  * `ProcessTask` so stream observation, timeout and user-interrupt
  * semantics match production.
  *
  * Deviations from v1:
- *   - v1's `execWithEnv(args, env)` is now `runner.exec(args, { env })`, so
- *     spawn-call assertions read `options.env` from the second argument.
+ *   - v1's `execWithEnv(args, env)` is now `runner.spawn(command, args, options)`,
+ *     so spawn-call assertions read `options.env` from the third argument.
  */
 
 import { PassThrough, Readable, type Writable } from 'node:stream';
@@ -32,9 +32,12 @@ import { userCancellationReason } from '#/_base/utils/abort';
 import type { IConfigService } from '#/app/config/config';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
+import { stubWorkspaceContext } from '../../../../session/workspaceContext/stub-workspace-context';
 import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { type ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
-import type { IProcess, ISessionProcessRunner } from '#/session/process/processRunner';
+import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 import { type BashInput, BashInputSchema } from '#/agent/tools/os/bash/bash';
 import { BashTool } from '#/agent/tools/os/bash/bashTool';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
@@ -72,11 +75,12 @@ function processWithOutput(
     readonly wait?: () => Promise<number>;
     readonly kill?: (signal?: NodeJS.Signals) => Promise<void>;
   } = {},
-): IProcess {
+): IHostProcess {
   const exitCode = options.exitCode ?? 0;
   const stdout = Readable.from(options.stdout === undefined ? [] : [options.stdout]);
   const stderr = Readable.from(options.stderr === undefined ? [] : [options.stderr]);
   return {
+    _serviceBrand: undefined,
     stdin: { end: vi.fn(), write: vi.fn() } as unknown as Writable,
     stdout,
     stderr,
@@ -98,7 +102,7 @@ function processWithInterleavedOutput(
     readonly delayMs: number;
   }>,
   exitCode = 0,
-): IProcess {
+): IHostProcess {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   const lastDelay = Math.max(...events.map((event) => event.delayMs), 0);
@@ -117,6 +121,7 @@ function processWithInterleavedOutput(
   });
 
   return {
+    _serviceBrand: undefined,
     stdin: { end: vi.fn(), write: vi.fn() } as unknown as Writable,
     stdout,
     stderr,
@@ -132,7 +137,7 @@ function processWithInterleavedOutput(
 }
 
 function pendingProcess(): {
-  readonly proc: IProcess;
+  readonly proc: IHostProcess;
   readonly finish: (exitCode?: number) => void;
 } {
   const stdout = new PassThrough();
@@ -151,6 +156,7 @@ function pendingProcess(): {
   };
   return {
     proc: {
+      _serviceBrand: undefined,
       stdin: { end: vi.fn(), write: vi.fn() } as unknown as Writable,
       stdout,
       stderr,
@@ -161,7 +167,7 @@ function pendingProcess(): {
       wait: vi.fn(async () => waitPromise),
       kill: vi.fn(async () => {
         finish(143);
-      }) as IProcess['kill'],
+      }) as IHostProcess['kill'],
       dispose: vi.fn(async () => {}),
     },
     finish,
@@ -169,7 +175,7 @@ function pendingProcess(): {
 }
 
 function processWithVisibleExitBeforeWait(exitCode = 0): {
-  proc: IProcess;
+  proc: IHostProcess;
   finishWait: () => void;
   markExited: () => void;
 } {
@@ -178,7 +184,8 @@ function processWithVisibleExitBeforeWait(exitCode = 0): {
   const waitPromise = new Promise<number>((resolve) => {
     resolveWait = resolve;
   });
-  const proc: IProcess = {
+  const proc: IHostProcess = {
+    _serviceBrand: undefined,
     stdin: { end: vi.fn(), write: vi.fn() } as unknown as Writable,
     stdout: Readable.from([]),
     stderr: Readable.from([]),
@@ -202,10 +209,11 @@ function processWithVisibleExitBeforeWait(exitCode = 0): {
   };
 }
 
-function processThatNeverExits(): IProcess {
+function processThatNeverExits(): IHostProcess {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   return {
+    _serviceBrand: undefined,
     stdin: { end: vi.fn(), write: vi.fn() } as unknown as Writable,
     stdout,
     stderr,
@@ -224,7 +232,7 @@ function processWithStreamError(options: {
   readonly stdoutError?: Error;
   readonly stderrError?: Error;
   readonly exitCode?: number;
-} = {}): IProcess {
+} = {}): IHostProcess {
   const exitCode = options.exitCode ?? 0;
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -244,6 +252,7 @@ function processWithStreamError(options: {
     }, 1);
   });
   return {
+    _serviceBrand: undefined,
     stdin: { end: vi.fn(), write: vi.fn() } as unknown as Writable,
     stdout,
     stderr,
@@ -255,7 +264,7 @@ function processWithStreamError(options: {
   };
 }
 
-function processWithOpenStreamsThatExitOnKill(): IProcess {
+function processWithOpenStreamsThatExitOnKill(): IHostProcess {
   let currentExitCode: number | null = null;
   let resolveWait: (code: number) => void = () => {};
   const waitPromise = new Promise<number>((resolve) => {
@@ -265,6 +274,7 @@ function processWithOpenStreamsThatExitOnKill(): IProcess {
   const stderr = new PassThrough();
 
   return {
+    _serviceBrand: undefined,
     stdin: { end: vi.fn(), write: vi.fn() } as unknown as Writable,
     stdout,
     stderr,
@@ -300,9 +310,9 @@ function createTestCtx(cwd = '/workspace'): ISessionContext {
 }
 
 
-function createTestRunner(proc: IProcess | ReturnType<typeof vi.fn>) {
+function createTestRunner(proc: IHostProcess | ReturnType<typeof vi.fn>) {
   const exec = typeof proc === 'function' ? proc : vi.fn().mockResolvedValue(proc);
-  const runner = { exec } as unknown as ISessionProcessRunner;
+  const runner = { _serviceBrand: undefined, spawn: exec } as IHostProcessService;
   return { runner, exec };
 }
 
@@ -714,14 +724,36 @@ function stubConfig(values: Record<string, unknown> = {}): IConfigService {
 }
 
 function bashTool(
-  runner: ISessionProcessRunner,
+  runner: IHostProcessService,
   env: IHostEnvironment = createTestEnv(),
   ctx: ISessionContext = createTestCtx(),
   background: IAgentTaskService = createFakeTaskService().service,
   toolPolicy: IAgentToolPolicyService = stubToolPolicy(),
   config: IConfigService = stubConfig(),
 ): BashTool {
-  return new BashTool(runner, env, ctx, background, toolPolicy, config);
+  const processService: IHostProcessService = {
+    _serviceBrand: undefined,
+    spawn: async (command, args = [], options) => runner.spawn(command, args, options),
+  };
+  const backend = Object.assign(
+    new FakeRuntime(
+      { workspaceId: ctx.workspaceId, runtimeId: 'local', generation: 'test' },
+      { capabilities: ['process'], pathClass: env.pathClass },
+    ),
+    { environment: env, process: processService },
+  );
+  const runtime: IAgentRuntimeService = {
+    _serviceBrand: undefined,
+    onDidChange: () => ({ dispose: () => {} }),
+    isAvailable: () => true,
+    inspect: () => backend,
+    acquire: () => ({
+      runtime: backend,
+      track: (resource) => resource,
+      dispose: () => {},
+    }),
+  };
+  return new BashTool(runtime, ctx, stubWorkspaceContext(ctx.cwd), background, toolPolicy, config);
 }
 
 
@@ -812,7 +844,7 @@ describe('BashTool', () => {
     expect(tool.description).toContain('/tasks');
   });
 
-  it('runs through runner.exec, injects cwd, noninteractive env, and closes stdin', async () => {
+  it('runs through runner.spawn, injects cwd, noninteractive env, and closes stdin', async () => {
     const proc = processWithOutput({ stdout: 'ok\n' });
     const { runner, exec } = createTestRunner(proc);
     const tool = bashTool(runner);
@@ -820,8 +852,9 @@ describe('BashTool', () => {
     const result = await executeTool(tool, context({ command: 'printf ok', timeout: 60 }));
 
     expect(exec).toHaveBeenCalledTimes(1);
-    const [argv, execOptions] = exec.mock.calls[0]!;
-    expect(argv).toEqual(['/bin/bash', '-c', 'printf ok']);
+    const [command, args, execOptions] = exec.mock.calls[0]!;
+    expect(command).toBe('/bin/bash');
+    expect(args).toEqual(['-c', 'printf ok']);
     expect(execOptions?.cwd).toBe('/workspace');
     expect(execOptions?.env).toMatchObject({
       NO_COLOR: '1',
@@ -839,11 +872,12 @@ describe('BashTool', () => {
     const { runner, exec } = createTestRunner(processWithOutput({ stdout: 'sub\n' }));
     const tool = bashTool(runner);
 
-    await executeTool(tool, context({ command: 'pwd', cwd: '/tmp/project', timeout: 60 }));
+    await executeTool(tool, context({ command: 'pwd', cwd: '/workspace/project', timeout: 60 }));
 
-    expect(exec.mock.calls[0]?.[0]).toEqual(['/bin/bash', '-c', 'pwd']);
-    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('/tmp/project');
-    expect(exec.mock.calls[0]?.[1]?.env).toMatchObject({ PWD: '/tmp/project' });
+    expect(exec.mock.calls[0]?.[0]).toBe('/bin/bash');
+    expect(exec.mock.calls[0]?.[1]).toEqual(['-c', 'pwd']);
+    expect(exec.mock.calls[0]?.[2]?.cwd).toBe('/workspace/project');
+    expect(exec.mock.calls[0]?.[2]?.env).toMatchObject({ PWD: '/workspace/project' });
   });
 
   it('resolves a relative args.cwd against the session cwd', async () => {
@@ -852,8 +886,9 @@ describe('BashTool', () => {
 
     await executeTool(tool, context({ command: 'pwd', cwd: 'packages/ui', timeout: 60 }));
 
-    expect(exec.mock.calls[0]?.[0]).toEqual(['/bin/bash', '-c', 'pwd']);
-    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('/workspace/project/packages/ui');
+    expect(exec.mock.calls[0]?.[0]).toBe('/bin/bash');
+    expect(exec.mock.calls[0]?.[1]).toEqual(['-c', 'pwd']);
+    expect(exec.mock.calls[0]?.[2]?.cwd).toBe('/workspace/project/packages/ui');
   });
 
   it('resolves a relative Windows args.cwd without Git Bash path conversion', async () => {
@@ -862,13 +897,10 @@ describe('BashTool', () => {
 
     await executeTool(tool, context({ command: 'pwd', cwd: 'packages\\ui', timeout: 60 }));
 
-    expect(exec.mock.calls[0]?.[0]).toEqual([
-      'C:\\Program Files\\Git\\bin\\bash.exe',
-      '-c',
-      'pwd',
-    ]);
-    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('C:/Users/me/project/packages/ui');
-    expect(exec.mock.calls[0]?.[1]?.env).toMatchObject({
+    expect(exec.mock.calls[0]?.[0]).toBe('C:\\Program Files\\Git\\bin\\bash.exe');
+    expect(exec.mock.calls[0]?.[1]).toEqual(['-c', 'pwd']);
+    expect(exec.mock.calls[0]?.[2]?.cwd).toBe('C:\\Users\\me\\project\\packages\\ui');
+    expect(exec.mock.calls[0]?.[2]?.env).toMatchObject({
       PWD: '/c/Users/me/project/packages/ui',
     });
   });
@@ -879,8 +911,9 @@ describe('BashTool', () => {
 
     await executeTool(tool, context({ command: 'pwd', timeout: 60 }));
 
-    expect(exec.mock.calls[0]?.[0]).toEqual(['/bin/bash', '-c', 'pwd']);
-    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('/var/app');
+    expect(exec.mock.calls[0]?.[0]).toBe('/bin/bash');
+    expect(exec.mock.calls[0]?.[1]).toEqual(['-c', 'pwd']);
+    expect(exec.mock.calls[0]?.[2]?.cwd).toBe('/var/app');
   });
 
   it('uses Git Bash semantics on Windows', async () => {
@@ -891,12 +924,9 @@ describe('BashTool', () => {
     const result = await executeTool(tool, context({ command: 'echo ok 2>nul', timeout: 60 }));
 
     expect(exec).toHaveBeenCalledTimes(1);
-    const [argv, execOptions] = exec.mock.calls[0]!;
-    expect(argv).toEqual([
-      'C:\\Program Files\\Git\\bin\\bash.exe',
-      '-c',
-      'echo ok 2>/dev/null',
-    ]);
+    const [command, args, execOptions] = exec.mock.calls[0]!;
+    expect(command).toBe('C:\\Program Files\\Git\\bin\\bash.exe');
+    expect(args).toEqual(['-c', 'echo ok 2>/dev/null']);
     expect(execOptions?.cwd).toBe('C:\\Users\\me\\project');
     expect(execOptions?.env).toMatchObject({
       PWD: '/c/Users/me/project',
@@ -1229,7 +1259,7 @@ describe('BashTool', () => {
 
       await executeTool(tool, context({ command: 'true', timeout: 60 }));
 
-      const env = exec.mock.calls[0]?.[1]?.env as Record<string, string>;
+      const env = exec.mock.calls[0]?.[2]?.env as Record<string, string>;
       expect(Object.prototype.hasOwnProperty.call(env, 'GIT_SSH_COMMAND')).toBe(false);
     } finally {
       if (previous !== undefined) process.env['GIT_SSH_COMMAND'] = previous;
@@ -1242,9 +1272,9 @@ describe('BashTool', () => {
 
     await executeTool(tool, context({ command: 'ls 2>nul', timeout: 60 }));
 
-    const argv = exec.mock.calls[0]?.[0] as readonly string[];
-    expect(argv[2]).toBe('ls 2>/dev/null');
-    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('C:\\Users\\me\\project');
+    const args = exec.mock.calls[0]?.[1] as readonly string[];
+    expect(args[1]).toBe('ls 2>/dev/null');
+    expect(exec.mock.calls[0]?.[2]?.cwd).toBe('C:\\Users\\me\\project');
   });
 
   it('passes nul-redirect through unchanged on Linux so the argv keeps the literal file target', async () => {
@@ -1253,9 +1283,9 @@ describe('BashTool', () => {
 
     await executeTool(tool, context({ command: 'ls 2>nul', timeout: 60 }));
 
-    const argv = exec.mock.calls[0]?.[0] as readonly string[];
-    expect(argv[2]).toBe('ls 2>nul');
-    expect(exec.mock.calls[0]?.[1]?.cwd).toBe('/workspace');
+    const args = exec.mock.calls[0]?.[1] as readonly string[];
+    expect(args[1]).toBe('ls 2>nul');
+    expect(exec.mock.calls[0]?.[2]?.cwd).toBe('/workspace');
   });
 
   it('exposes a shell description that documents /bin/bash, TaskOutput/TaskStop, safety and efficiency sections, and background semantics', () => {
@@ -1687,12 +1717,9 @@ describe('BashTool background mode', () => {
     const results = await Promise.all([first, second]);
 
     expect(exec).toHaveBeenCalledTimes(2);
-    const [argv, execOptions] = exec.mock.calls[0]!;
-    expect(argv).toEqual([
-      'C:\\Program Files\\Git\\bin\\bash.exe',
-      '-c',
-      'echo ok 2>/dev/null',
-    ]);
+    const [command, args, execOptions] = exec.mock.calls[0]!;
+    expect(command).toBe('C:\\Program Files\\Git\\bin\\bash.exe');
+    expect(args).toEqual(['-c', 'echo ok 2>/dev/null']);
     expect(execOptions?.cwd).toBe('C:\\Users\\me\\project');
     expect(execOptions?.env).toMatchObject({ SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe' });
     expect(secondProc.kill).toHaveBeenCalledWith('SIGTERM');
