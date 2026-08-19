@@ -298,7 +298,7 @@ describe('acp-server session lifecycle', () => {
         cwd: homeDir,
         mcpServers: [
           {
-            name: 'mock',
+            name: '__proto__',
             command: process.execPath,
             args: [STDIO_MCP_FIXTURE],
             env: [{ name: 'KIMI_TEST_MCP_START_DELAY_MS', value: '0' }],
@@ -310,8 +310,8 @@ describe('acp-server session lifecycle', () => {
       // Engine-side assertion: the session scope's MCP handle is the overlay
       // view and the converted server ended up connected under its ACP name.
       const entries = await sessionMcpEntries(c, created.sessionId);
-      expect(entries.find((e) => e.name === 'mock')).toMatchObject({
-        name: 'mock',
+      expect(entries.find((e) => e.name === '__proto__')).toMatchObject({
+        name: '__proto__',
         status: 'connected',
       });
     },
