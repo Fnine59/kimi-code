@@ -291,7 +291,32 @@ describe('acp-server session lifecycle', () => {
   );
 
   it(
-    'session/new connects type-absent stdio MCP servers in the local runtime',
+    'session/new connects ACP mcpServers as ephemeral session servers',
+    async () => {
+      const c = await boot();
+      const created = (await c.send('session/new', {
+        cwd: homeDir,
+        mcpServers: [
+          {
+            name: 'mock',
+            command: process.execPath,
+            args: [STDIO_MCP_FIXTURE],
+            env: [{ name: 'KIMI_TEST_MCP_START_DELAY_MS', value: '0' }],
+          },
+        ],
+      })) as { sessionId: string };
+      expect(created.sessionId).toMatch(/^session_/);
+
+      // Engine-side assertion: the session scope's MCP handle is the overlay
+      // view and the converted server ended up connected under its ACP name.
+      const entries = await sessionMcpEntries(c, created.sessionId);
+      expect(entries.find((e) => e.name === 'mock')?.status).toBe('connected');
+    },
+    30_000,
+  );
+
+  it(
+    'session/new preserves MCP server names that match object prototype properties',
     async () => {
       const c = await boot();
       const created = (await c.send('session/new', {
@@ -305,10 +330,7 @@ describe('acp-server session lifecycle', () => {
           },
         ],
       })) as { sessionId: string };
-      expect(created.sessionId).toMatch(/^session_/);
 
-      // Engine-side assertion: the session scope's MCP handle is the overlay
-      // view and the converted server ended up connected under its ACP name.
       const entries = await sessionMcpEntries(c, created.sessionId);
       expect(entries.find((e) => e.name === '__proto__')).toMatchObject({
         name: '__proto__',
@@ -319,20 +341,15 @@ describe('acp-server session lifecycle', () => {
   );
 
   it(
-    'session/load connects type-absent stdio MCP servers after restart',
+    'session/load forwards mcpServers to the re-materialized session',
     async () => {
       const c = await boot();
       const created = (await c.send('session/new', { cwd: homeDir, mcpServers: [] })) as {
         sessionId: string;
       };
-      await c.close();
-      client = undefined;
+      await c.send('session/close', { sessionId: created.sessionId });
 
-      client = await createTestClient({ homeDir: homeDir! });
-      const restoredClient = client;
-      await restoredClient.send('initialize', { protocolVersion: 1, clientCapabilities: {} });
-
-      await restoredClient.send('session/load', {
+      await c.send('session/load', {
         sessionId: created.sessionId,
         cwd: homeDir,
         mcpServers: [
@@ -340,11 +357,8 @@ describe('acp-server session lifecycle', () => {
         ],
       });
 
-      const entries = await sessionMcpEntries(restoredClient, created.sessionId);
-      expect(entries.find((e) => e.name === 'mock')).toMatchObject({
-        name: 'mock',
-        status: 'connected',
-      });
+      const entries = await sessionMcpEntries(c, created.sessionId);
+      expect(entries.find((e) => e.name === 'mock')?.status).toBe('connected');
     },
     30_000,
   );

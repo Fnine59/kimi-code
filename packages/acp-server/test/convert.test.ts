@@ -19,7 +19,7 @@ describe('acpMcpServersToConfigRecord', () => {
     expect(acpMcpServersToConfigRecord([])).toBeUndefined();
   });
 
-  it('maps type-absent stdio servers to the local runtime with args and env', () => {
+  it('maps stdio servers (no type field) to local stdio configs', () => {
     const servers: McpServer[] = [
       {
         name: 'fs',
