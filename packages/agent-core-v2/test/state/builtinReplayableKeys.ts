@@ -3,7 +3,6 @@ import type { ReplayableStateKey } from '#/state/state';
 import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
 import { staleGuardKey } from '#/features/staleGuard/staleGuardOps';
 import { fullCompactionKey } from '#/agent/fullCompaction/compactionOps';
-import { goalForkNoticeKey, goalKey } from '#/features/goal/goalOps';
 import { interruptionReminderKey } from '#/agent/interruptionReminder/interruptionReminderOps';
 import { llmRequestTraceKey } from '#/agent/llmRequester/llmRequestOps';
 import { turnKey } from '#/agent/loop/turnOps';
@@ -17,7 +16,6 @@ import { pluginSessionStartSnapshotKey } from '#/agent/plugin/agentPluginOps';
 import { promptAdmissionKey } from '#/agent/prompt/promptOps';
 import { profileActiveToolsKey, profileKey } from '#/agent/profile/profileOps';
 import { runtimeBindingKey } from '#/agent/runtimeBinding/runtimeBindingOps';
-import { skillKey } from '#/agent/skill/skillOps';
 import { taskKey } from '#/agent/task/taskOps';
 import { taskNotificationDeliveryKey } from '#/agent/task/taskService';
 import { userToolKey } from '#/agent/userTool/userToolOps';
@@ -29,8 +27,6 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   contextMemoryKey,
   staleGuardKey,
   fullCompactionKey,
-  goalKey,
-  goalForkNoticeKey,
   interruptionReminderKey,
   llmRequestTraceKey,
   turnKey,
@@ -43,7 +39,6 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   profileKey,
   profileActiveToolsKey,
   runtimeBindingKey,
-  skillKey,
   taskKey,
   taskNotificationDeliveryKey,
   userToolKey,

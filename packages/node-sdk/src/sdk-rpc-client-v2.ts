@@ -58,14 +58,15 @@
  * - `prompt` / `steer` / `runShellCommand` / `cancelShellCommand` → the
  *   `klient.session(id).agent(id)` facade; `activatePluginCommand` →
  *   `IAgentPluginCommandService` through the agent scope; `activateSkill` →
- *   `IAgentSkillService` through the agent scope (the engine settles
+ *   the main agent's `AgentSkill` runtime (the engine settles
  *   `{turn_id}` and applies v1's main-only metadata update itself);
  *   `generateAgentsMd` →
  *   `ISessionInitService` through the session scope; `getSessionWarnings` →
  *   rebuilt over the profile's cached AGENTS.md warning plus the engine's
  *   `prepareSystemPromptContext` (no v2 aggregate service exists).
  * - `createGoal` / `getGoal` / `pauseGoal` / `resumeGoal` / `cancelGoal` →
- *   `IAgentGoalService` through the agent scope; `getCronTasks` →
+ *   the `AgentGoal` runtime facade resolved through the session's agent
+ *   lifecycle service; `getCronTasks` →
  *   with the v1 snapshot
  *   shape restored; `listBackgroundTasks` / `getBackgroundTaskOutput` → the
  *   `klient.session(id).agent(id)` facade; `stopBackgroundTask` /
@@ -162,12 +163,12 @@ import {
   ensureMainAgent,
   agentContextOf,
   IAgentActivityView,
-  IAgentContextInjectorService,
+  AgentReminder,
   IAgentContextMemoryService,
   AgentCron,
+  AgentGoal,
   IAgentConversationUndoService,
   IAgentFullCompactionService,
-  IAgentGoalService,
   IAgentPluginService,
   IAgentLifecycleService,
   IAgentLoopService,
@@ -175,7 +176,7 @@ import {
   IAgentPermissionRulesService,
   IAgentPluginCommandService,
   IAgentProfileService,
-  IAgentSkillService,
+  AgentSkill,
   IAgentSwarmService,
   IAgentTaskService,
   ISessionTokenCountingService,
@@ -1950,7 +1951,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   }
 
   /**
-   * Through the agent scope (`IAgentSkillService.activate`) — the direct call
+   * Through the target agent's `AgentSkill` runtime facade — the direct call
    * keeps v1's semantics: validate first (`skill.not_found` /
    * `skill.type_unsupported` reject synchronously), then render the skill
    * prompt and launch a turn with it. The engine updates title/lastPrompt for
@@ -1961,7 +1962,10 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    */
   override async activateSkill(input: ActivateSkillRpcInput): Promise<void> {
     const agent = await this.agentScope(input.sessionId);
-    await agent.accessor.get(IAgentSkillService).activate({ name: input.name, args: input.args });
+    await agent.accessor
+      .get(IAgentLifecycleService)
+      .resolve(agentContextOf(agent), AgentSkill)
+      .activate({ name: input.name, args: input.args });
   }
 
   /**
@@ -2065,7 +2069,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     } else {
       swarm.exit();
     }
-    await agent.accessor.get(IAgentContextInjectorService).reconcileWhenIdle('swarm_mode');
+    await agent.accessor.get(IAgentLifecycleService).resolve(agentContextOf(agent), AgentReminder).reconcileWhenIdle('swarm_mode');
   }
 
   /** v1's `swarm()` composition: enter with the one-shot `task` trigger, then prompt. */
@@ -2089,7 +2093,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     } else {
       tower.exit();
     }
-    await agent.accessor.get(IAgentContextInjectorService).reconcileWhenIdle('tower_mode');
+    await agent.accessor.get(IAgentLifecycleService).resolve(agentContextOf(agent), AgentReminder).reconcileWhenIdle('tower_mode');
   }
 
   // -----------------------------------------------------------------------
@@ -2106,7 +2110,8 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   // -----------------------------------------------------------------------
 
   /**
-   * Through the agent scope (`IAgentGoalService.createGoal`) — no klient
+   * Through the `AgentGoal` runtime facade resolved from the session's agent
+   * lifecycle service — no klient
    * facade exists for the goal domain. Gap: v2 rejects every goal command on
    * a non-main agent (`goal.unsupported_agent`) where v1 keeps a `GoalMode`
    * on every agent; only reachable through a non-main `interactiveAgentId`
@@ -2114,29 +2119,42 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    */
   override async createGoal(input: SessionIdRpcInput & CreateGoalInput): Promise<GoalSnapshot> {
     const agent = await this.agentScope(input.sessionId);
-    return agent.accessor
-      .get(IAgentGoalService)
+    return this.requireLiveSession(input.sessionId)
+      .accessor.get(IAgentLifecycleService)
+      .resolve(agentContextOf(agent), AgentGoal)
       .createGoal({ objective: input.objective, replace: input.replace });
   }
 
   override async getGoal(input: SessionIdRpcInput): Promise<GoalToolResult> {
     const agent = await this.agentScope(input.sessionId);
-    return agent.accessor.get(IAgentGoalService).getGoal();
+    return this.requireLiveSession(input.sessionId)
+      .accessor.get(IAgentLifecycleService)
+      .resolve(agentContextOf(agent), AgentGoal)
+      .getGoal();
   }
 
   override async pauseGoal(input: SessionIdRpcInput): Promise<GoalSnapshot> {
     const agent = await this.agentScope(input.sessionId);
-    return agent.accessor.get(IAgentGoalService).pauseGoal();
+    return this.requireLiveSession(input.sessionId)
+      .accessor.get(IAgentLifecycleService)
+      .resolve(agentContextOf(agent), AgentGoal)
+      .pauseGoal();
   }
 
   override async resumeGoal(input: SessionIdRpcInput): Promise<GoalSnapshot> {
     const agent = await this.agentScope(input.sessionId);
-    return agent.accessor.get(IAgentGoalService).resumeGoal();
+    return this.requireLiveSession(input.sessionId)
+      .accessor.get(IAgentLifecycleService)
+      .resolve(agentContextOf(agent), AgentGoal)
+      .resumeGoal();
   }
 
   override async cancelGoal(input: SessionIdRpcInput): Promise<GoalSnapshot> {
     const agent = await this.agentScope(input.sessionId);
-    return agent.accessor.get(IAgentGoalService).cancelGoal();
+    return this.requireLiveSession(input.sessionId)
+      .accessor.get(IAgentLifecycleService)
+      .resolve(agentContextOf(agent), AgentGoal)
+      .cancelGoal();
   }
 
   /**
