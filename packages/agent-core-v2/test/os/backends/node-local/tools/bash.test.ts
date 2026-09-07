@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough, Readable, type Writable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -22,6 +25,7 @@ import { stubWorkspaceContext } from '../../../../session/workspaceContext/stub-
 import type { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { type ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
+import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { type BashInput, BashInputSchema } from '#/agent/tools/os/bash/bash';
 import { BashTool } from '#/agent/tools/os/bash/bashTool';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
@@ -863,6 +867,48 @@ describe('BashTool', () => {
     expect(exec.mock.calls[0]?.[2]?.env).toMatchObject({ PWD: '/workspace/project' });
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'keeps later lines in cwd when the first command is backgrounded',
+    async () => {
+      const cwd = mkdtempSync(join(tmpdir(), 'kimi-bash-cwd-'));
+      try {
+        const tool = bashTool(new HostProcessService());
+        const result = await executeTool(
+          tool,
+          context({ command: 'true &\npwd -P\nwait', cwd, timeout: 60 }),
+        );
+
+        expect(result).toMatchObject({ isError: false });
+        expect(typeof result.output).toBe('string');
+        expect((result.output as string).trim()).toBe(realpathSync(cwd));
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'preserves the logical cwd for a symlinked workspace',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'kimi-bash-cwd-'));
+      const target = join(root, 'target');
+      const cwd = join(root, 'workspace');
+      mkdirSync(target);
+      symlinkSync(target, cwd, 'dir');
+
+      try {
+        const tool = bashTool(new HostProcessService());
+        const result = await executeTool(tool, context({ command: 'pwd', cwd, timeout: 60 }));
+
+        expect(result).toMatchObject({ isError: false });
+        expect(typeof result.output).toBe('string');
+        expect((result.output as string).trim()).toBe(cwd);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('resolves a relative args.cwd against the session cwd', async () => {
     const { runner, exec } = createTestRunner(processWithOutput({ stdout: 'sub\n' }));
     const tool = bashTool(runner, posixEnv, createTestCtx('/workspace/project'));
@@ -886,6 +932,20 @@ describe('BashTool', () => {
     expect(exec.mock.calls[0]?.[2]?.env).toMatchObject({
       PWD: '/c/Users/me/project/packages/ui',
     });
+  });
+
+  it('accepts args.cwd outside the workspace roots', async () => {
+    const { runner, exec } = createTestRunner(processWithOutput({ stdout: 'out\n' }));
+    const tool = bashTool(runner);
+
+    const result = await executeTool(
+      tool,
+      context({ command: 'pwd', cwd: '/outside/workspace', timeout: 60 }),
+    );
+
+    expect(exec.mock.calls[0]?.[1]).toEqual(['-c', 'pwd']);
+    expect(exec.mock.calls[0]?.[2]?.cwd).toBe('/outside/workspace');
+    expect(result).toMatchObject({ output: 'out\n', isError: false });
   });
 
   it('uses the kaos cwd as the default working directory', async () => {

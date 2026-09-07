@@ -16,7 +16,7 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IEventBus } from '#/app/event/eventBus';
 import type { Event2 } from '#/app/event/event2';
-import { APIProviderRateLimitError } from '#/kosong/contract/errors';
+import { APIProviderRateLimitError } from '#/llm-adapter/contract/errors';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import {
   IAgentLifecycleService,
@@ -1266,18 +1266,11 @@ function lifecycleStub(
     get: (agentId: string) => (handles.has(agentId) ? stubAgentContext(agentId, 1) : undefined),
     handleOf: (agentId: string) => handles.get(agentId),
     list: () => [...handles.keys()].map((agentId) => stubAgentContext(agentId, 1)),
-    resolve: () => {
-      throw new Error('unexpected resolve');
-    },
-    inspect: () => {
-      throw new Error('unexpected inspect');
-    },
     remove: async (context: AgentContext) => {
       handles.delete(context.agentId);
     },
     broadcastPermissionMode: () => {},
     adopt: (handle: IAgentScopeHandle) => stubAgentContext(handle.id, 1),
-    attachRuntimes: () => {},
   };
   return lifecycle as IAgentLifecycleService;
 }

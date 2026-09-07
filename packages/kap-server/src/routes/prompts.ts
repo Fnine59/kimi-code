@@ -8,8 +8,7 @@ import {
   IAgentRuntimeBindingService,
   IAgentToolPolicyService,
   IAgentPromptService,
-  agentContextOf,
-  AgentSkill,
+  IAgentSkillService,
   IAuthSummaryService,
   IEventBus,
   IEventService,
@@ -53,10 +52,10 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import {
   assertPromptFileRefs,
   assertPromptPathRefs,
-  assertPromptSessionMediaRefs,
   contentHasPathRefs,
   contentToCoreParts,
   resolvePromptMediaFiles,
+  resolvePromptSessionMediaRefs,
   type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
@@ -113,7 +112,7 @@ async function resolvePromptFromSession(session: ISessionScopeHandle, agentId?: 
   }
   return {
     prompt: agent.accessor.get(IAgentPromptService),
-    skill: agent.accessor.get(IAgentLifecycleService).resolve(agentContextOf(agent), AgentSkill),
+    skill: agent.accessor.get(IAgentSkillService),
     events: agent.accessor.get(IEventBus),
     auth: agent.accessor.get(IAuthSummaryService),
     profile: agent.accessor.get(IAgentProfileService),
@@ -244,7 +243,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             req.body.skills,
           );
         }
-        await assertPromptSessionMediaRefs(
+        const resolvedSessionMedia = await resolvePromptSessionMediaRefs(
           req.body.content,
           session.accessor.get(ISessionMediaStore),
         );
@@ -258,9 +257,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           req.body.model ?? (switchingProfile ? undefined : sessionModel || undefined),
         );
 
-        const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
+        const telemetry = core.accessor.get(ITelemetryService).withContext({ session_id });
         preparedMedia = await resolvePromptMediaFiles(
-          req.body.content,
+          resolvedSessionMedia,
           core.accessor.get(IFileService),
           core.accessor.get(IBootstrapService).cacheDir,
           {
